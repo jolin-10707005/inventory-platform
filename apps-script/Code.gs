@@ -11,7 +11,7 @@
 // 盤點照片要存放的 Google Drive 資料夾 ID（即使用者提供的資料夾）
 var PHOTO_FOLDER_ID = "1h9qjSAx2-sojs5_uP307qmBUvw-XiDhn";
 
-var TABS = ["brands", "stores", "staff", "prices", "records", "uploads"];
+var TABS = ["brands", "stores", "staff", "prices", "records", "uploads", "aliases"];
 
 // 分頁顯示名稱（程式內部仍用英文代碼；工作表分頁改中文，方便人工檢視）
 var SHEET_NAMES = {
@@ -21,7 +21,8 @@ var SHEET_NAMES = {
   prices: "單價",
   records: "盤點紀錄",
   uploads: "上傳紀錄",
-  masters: "主檔索引"
+  masters: "主檔索引",
+  aliases: "店名對應"
 };
 
 function doGet(e) {
