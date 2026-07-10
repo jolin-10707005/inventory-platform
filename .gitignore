@@ -1,0 +1,4 @@
+# 內部文件，不發布到公開網站
+*.docx
+node_modules/
+.DS_Store

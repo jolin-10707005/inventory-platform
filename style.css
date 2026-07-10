@@ -1,0 +1,32 @@
+/* 日翊盤點平台 - 自訂樣式（Tailwind 之外的補充） */
+
+/* 表格橫向捲動容器 */
+.table-scroll {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+/* 照片縮圖 */
+.photo-thumb {
+  width: 96px;
+  height: 96px;
+  object-fit: cover;
+  border-radius: 0.5rem;
+  border: 1px solid #e5e7eb;
+}
+
+/* 淡入動畫 */
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.fade-in { animation: fadeIn .25s ease-out; }
+
+/* Toast 通知 */
+.toast {
+  position: fixed;
+  bottom: 1.5rem;
+  right: 1.5rem;
+  z-index: 50;
+  animation: fadeIn .25s ease-out;
+}
