@@ -109,13 +109,28 @@ function safeCell(v) {
 }
 
 // 匯出 .xlsx；aoa = 二維陣列（第一列為表頭）
-function exportXLSX(filename, sheetName, aoa) {
-  const clean = aoa.map((row) => row.map(safeCell));
+// opts.asText = true 時，所有儲存格強制為文字格式（主檔／庫存檔需求）
+function exportXLSX(filename, sheetName, aoa, opts) {
+  const asText = opts && opts.asText;
+  const clean = aoa.map((row) => row.map((v) => (asText ? (v == null ? "" : String(v)) : safeCell(v))));
   const ws = XLSX.utils.aoa_to_sheet(clean);
+  if (asText) {
+    const range = XLSX.utils.decode_range(ws["!ref"]);
+    for (let R = range.s.r; R <= range.e.r; R++) {
+      for (let C = range.s.c; C <= range.e.c; C++) {
+        const cell = ws[XLSX.utils.encode_cell({ r: R, c: C })];
+        if (cell) { cell.t = "s"; cell.z = "@"; }
+      }
+    }
+  }
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, (sheetName || "工作表1").slice(0, 31));
   XLSX.writeFile(wb, filename);
 }
+
+// 標準主檔／庫存檔輸出欄位（順序、名稱需與客戶範本一致；庫存數量為數量欄）
+const MASTER_COLS = ["商品編號", "barcode", "舊商品編號2", "物品名稱", "庫存數量", "品項平均成本"];
+const QTY_COL = "庫存數量";
 
 // 讀取上傳的 .xlsx / .xls；回傳 { headers:[...], rows:[{欄名:值}] }
 function readXLSX(file) {
@@ -197,7 +212,7 @@ function DownloadZone({ db, month, toast }) {
   const setF = (k, v) => setFilters((p) => ({ ...p, [k]: v }));
   const index = db.mastersIndex || [];
 
-  // 該店某類主檔是否已產製（依 mastersIndex 輕量索引判斷）
+  // 該店某類（主檔／庫存檔）是否已產製
   const has = (storeId, type) => index.some((m) => m.storeId === storeId && m.month === month && m.type === type);
 
   // 加上狀態文字後做欄位篩選
@@ -207,15 +222,16 @@ function DownloadZone({ db, month, toast }) {
     .filter((s) => matchFilters(s, filters));
   const brand = db.brands.find((b) => b.id === brandId);
 
-  // 下載時「先抓最新」，產出該店真實主檔 .xlsx（下載前抓最新，確保為最新資料）
+  // 下載時「先抓最新」：輸出上傳時已重建好的標準格式（主檔數量已為0、庫存檔為客戶數量），全部文字格式
   const download = async (store, type) => {
-    const label = type === "master" ? "盤點主檔" : "庫存檔";
+    const label = type === "master" ? "主檔" : "庫存檔";
     setBusy(store.id + type);
     try {
       const m = await InventoryAPI.getMaster(store.id, month, type);
-      if (!m || !m.columns || m.columns.length === 0) { toast("查無此店主檔，請重新整理或請管理者產製"); return; }
-      const aoa = [m.columns, ...m.rows.map((r) => m.columns.map((c) => r[c]))];
-      exportXLSX(`${store.code}_${label}_${month}.xlsx`, label, aoa);
+      if (!m || !m.columns || m.columns.length === 0) { toast(`查無此店${label}，請重新整理或請管理者上傳`); return; }
+      const rows = m.rows.map((r) => m.columns.map((c) => (r[c] == null ? "" : r[c])));
+      const dateStr = new Date().toISOString().slice(0, 10).replace(/-/g, "");
+      exportXLSX(`${brand ? brand.name : ""}盤點用${label}-${store.name}-${dateStr}.xlsx`, label, [m.columns, ...rows], { asText: true });
       toast(`已下載 ${store.name} ${label}（${m.rows.length} 筆）`);
     } catch (e) {
       toast("下載失敗，請確認網路後再試");
@@ -485,16 +501,32 @@ function FillZone({ db, setDB, month, user, toast }) {
 /* ============================================================
  * 3. 上傳區：上傳客戶主檔 → 依店鋪及盤點程式格式產製各店主檔（庫存檔）
  * ============================================================ */
-function UploadZone({ db, setDB, month, toast }) {
-  const [brandId, setBrandId] = useState("");
-  const [fileType, setFileType] = useState("master"); // master=盤點主檔, stock=庫存檔
+function UploadZone({ db, setDB, month, toast, brandId }) {
+  const [fileType, setFileType] = useState("master");  // master=盤點前主檔(數量帶0), stock=盤點當日庫存檔(帶客戶數量)
   const [file, setFile] = useState(null);
   const [parsed, setParsed] = useState(null);          // { headers, rows }
   const [storeCol, setStoreCol] = useState("");        // 哪一欄對應店鋪
   const [matchBy, setMatchBy] = useState("code");      // 以店鋪代碼或名稱對應
+  const [colMap, setColMap] = useState({});            // 標準欄位 → 客戶檔來源欄
   const [busy, setBusy] = useState(false);
+  const isStock = fileType === "stock";
   const stores = db.stores.filter((s) => s.brandId === brandId && s.month === month);
   const brand = db.brands.find((b) => b.id === brandId);
+
+  // 依標準欄位自動猜測對應的來源欄
+  const guessMap = (headers) => {
+    const rules = {
+      "商品編號": /商品編號|品號|貨號|item|sku/i,
+      "barcode": /barcode|條碼|國際條碼|ean/i,
+      "舊商品編號2": /舊.*編號|old/i,
+      "物品名稱": /品名|物品名稱|名稱|品項名稱|name/i,
+      "庫存數量": /數量|庫存|存量|qty|stock/i,
+      "品項平均成本": /成本|平均成本|單價|cost|price/i,
+    };
+    const map = {};
+    MASTER_COLS.forEach((c) => { map[c] = headers.find((h) => rules[c].test(h)) || ""; });
+    return map;
+  };
 
   // 選檔後立即解析 Excel，讀出表頭供對應
   const onFile = async (e) => {
@@ -506,48 +538,57 @@ function UploadZone({ db, setDB, month, toast }) {
       const { headers, rows } = await readXLSX(f);
       if (headers.length === 0 || rows.length === 0) { toast("檔案沒有可讀取的資料列"); return; }
       setParsed({ headers, rows });
-      // 自動猜測店鋪欄位
       const guess = headers.find((h) => /店|門市|store|shop|代碼|code/i.test(h));
       setStoreCol(guess || headers[0]);
+      setColMap(guessMap(headers));
     } catch (err) { toast("Excel 解析失敗，請確認檔案格式"); }
   };
 
-  // 依店鋪欄位切分，逐店寫入主檔；並記錄一筆上傳紀錄
+  // 依店鋪切分並用客戶檔完整重建標準 6 欄格式（主檔數量帶0；庫存檔帶客戶數量），逐店寫入
   const produce = async () => {
+    const label = isStock ? "庫存檔" : "主檔";
     if (!brandId) { toast("請先選擇品牌"); return; }
-    if (!parsed) { toast("請先上傳並解析客戶主檔（Excel）"); return; }
+    if (!parsed) { toast("請先上傳並解析客戶檔（Excel）"); return; }
     if (stores.length === 0) { toast("此品牌本月尚無店鋪名單，請先至維護區建立"); return; }
     if (!storeCol) { toast("請選擇對應店鋪的欄位"); return; }
+    if (isStock && !colMap[QTY_COL]) { toast("庫存檔必須指定「庫存數量」對應的來源欄"); return; }
 
     setBusy(true);
     try {
-      // 依 storeCol 分組
-      const groups = {}; // key = 該欄的值
+      const groups = {};
       parsed.rows.forEach((r) => {
         const key = String(r[storeCol]).trim();
         (groups[key] = groups[key] || []).push(r);
       });
-      // 對應到店鋪
+      // 用客戶檔重建標準 6 欄（全部字串）；主檔庫存數量固定 0、庫存檔帶入客戶數量
+      const toStd = (src) => {
+        const o = {};
+        MASTER_COLS.forEach((c) => {
+          if (c === QTY_COL) { o[c] = isStock ? String(src[colMap[c]] == null ? "" : src[colMap[c]]) : "0"; return; }
+          const from = colMap[c];
+          o[c] = from ? String(src[from] == null ? "" : src[from]) : "";
+        });
+        return o;
+      };
       let matched = 0, unmatchedKeys = [], addedIdx = [];
       for (const key of Object.keys(groups)) {
         const store = stores.find((s) => String(matchBy === "code" ? s.code : s.name).trim() === key);
         if (!store) { if (key) unmatchedKeys.push(key); continue; }
-        await InventoryAPI.putMaster({ storeId: store.id, month, type: fileType, columns: parsed.headers, rows: groups[key] });
+        const rows = groups[key].map(toStd);
+        await InventoryAPI.putMaster({ storeId: store.id, month, type: fileType, columns: MASTER_COLS, rows });
         addedIdx.push({ storeId: store.id, month, type: fileType });
         matched++;
       }
-      // 上傳紀錄 + 樂觀更新 mastersIndex（下載區立即可見）
       const uploadRec = { id: uid("U"), brandId, month, type: fileType, fileName: file.name, storeCount: matched, rowCount: parsed.rows.length, uploadedAt: new Date().toISOString().slice(0, 10) };
       const idx = (db.mastersIndex || []).filter((m) => !addedIdx.some((a) => a.storeId === m.storeId && a.month === m.month && a.type === m.type));
       const next = { ...db, uploads: [...db.uploads, uploadRec], mastersIndex: [...idx, ...addedIdx] };
       setDB(next);
       await InventoryAPI.appendRow(next, "uploads", uploadRec);
 
-      const label = fileType === "master" ? "盤點主檔" : "庫存檔";
-      let msg = `已產製 ${matched} 家店鋪的${label}（共 ${parsed.rows.length} 筆）✔`;
+      let msg = `已用客戶檔重建 ${matched} 家店鋪的${label}（共 ${parsed.rows.length} 筆）✔`;
       if (unmatchedKeys.length) msg += `；有 ${unmatchedKeys.length} 個店鋪值未對應（例：${unmatchedKeys.slice(0, 2).join("、")}）`;
       toast(msg);
-      setFile(null); setParsed(null); setStoreCol("");
+      setFile(null); setParsed(null); setStoreCol(""); setColMap({});
     } catch (e) {
       toast("產製失敗，請確認網路後再試");
     } finally { setBusy(false); }
@@ -558,46 +599,66 @@ function UploadZone({ db, setDB, month, toast }) {
 
   return (
     <div className="space-y-6">
-      <SectionCard title="📤 上傳客戶主檔" subtitle="上傳客戶提供的主檔（Excel），依店鋪欄位切分產製各盤點店鋪所需主檔／庫存檔">
+      <SectionCard title="📤 上傳客戶主檔" subtitle="盤點前的檔案做主檔（數量帶0）、盤點當日的檔案做庫存檔（帶客戶數量）；兩者皆用客戶檔完整重建為標準格式">
         <div className="space-y-4">
           <div className="flex flex-wrap gap-3 items-center">
-            <BrandStoreSelect db={db} brandId={brandId} month={month} onBrand={setBrandId} showStore={false} />
+            <span className="text-sm text-slate-600">目前品牌：<b>{brand ? brand.name : "（請於上方選擇品牌）"}</b></span>
             <select value={fileType} onChange={(e) => setFileType(e.target.value)} className={sel}>
-              <option value="master">檔案類型：盤點主檔</option>
-              <option value="stock">檔案類型：庫存檔</option>
+              <option value="master">用途：盤點前主檔（庫存數量帶 0）</option>
+              <option value="stock">用途：盤點當日庫存檔（帶入客戶數量）</option>
             </select>
           </div>
 
           <div className="border-2 border-dashed border-slate-300 rounded-xl p-8 text-center bg-slate-50">
             <div className="text-4xl mb-2">📄</div>
-            <p className="text-sm text-slate-600 mb-3">上傳客戶提供的主檔 / 庫存檔（Excel：.xlsx / .xls）</p>
+            <p className="text-sm text-slate-600 mb-3">上傳客戶提供的檔案（Excel：.xlsx / .xls）— 目前用途：<b>{isStock ? "盤點當日庫存檔" : "盤點前主檔"}</b></p>
             <input type="file" accept=".xlsx,.xls" onChange={onFile}
               className="mx-auto block text-sm text-slate-500 file:mr-3 file:px-4 file:py-2 file:rounded-lg file:border-0 file:bg-blue-600 file:text-white hover:file:bg-blue-700" />
             {file && parsed && <p className="text-sm text-emerald-600 mt-2">✔ {file.name}：讀到 {parsed.headers.length} 欄、{parsed.rows.length} 筆資料</p>}
           </div>
 
           {parsed && (
-            <div className="bg-white border border-slate-200 rounded-xl p-4 space-y-3">
-              <p className="text-sm font-medium text-slate-700">設定切分方式</p>
-              <div className="flex flex-wrap gap-3 items-center text-sm">
-                <span className="text-slate-600">以此欄對應店鋪：</span>
-                <select value={storeCol} onChange={(e) => setStoreCol(e.target.value)} className={sel}>
-                  {parsed.headers.map((h) => <option key={h} value={h}>{h}</option>)}
-                </select>
-                <span className="text-slate-600">對應到店鋪的：</span>
-                <select value={matchBy} onChange={(e) => setMatchBy(e.target.value)} className={sel}>
-                  <option value="code">店鋪代碼</option>
-                  <option value="name">店鋪名稱</option>
-                </select>
+            <div className="bg-white border border-slate-200 rounded-xl p-4 space-y-4">
+              <div>
+                <p className="text-sm font-medium text-slate-700 mb-2">① 店鋪切分</p>
+                <div className="flex flex-wrap gap-3 items-center text-sm">
+                  <span className="text-slate-600">以此欄對應店鋪：</span>
+                  <select value={storeCol} onChange={(e) => setStoreCol(e.target.value)} className={sel}>
+                    {parsed.headers.map((h) => <option key={h} value={h}>{h}</option>)}
+                  </select>
+                  <span className="text-slate-600">比對店鋪：</span>
+                  <select value={matchBy} onChange={(e) => setMatchBy(e.target.value)} className={sel}>
+                    <option value="code">店鋪代碼</option>
+                    <option value="name">店鋪名稱</option>
+                  </select>
+                </div>
               </div>
-              <p className="text-xs text-slate-400">系統會依「{storeCol}」欄的值，比對本品牌店鋪的{matchBy === "code" ? "代碼" : "名稱"}，切分成各店主檔。</p>
+              <div>
+                <p className="text-sm font-medium text-slate-700 mb-2">② 欄位對應（標準輸出欄 ← 客戶檔欄位）</p>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-sm">
+                  {MASTER_COLS.map((c) => {
+                    const qtyForMaster = c === QTY_COL && !isStock;
+                    return (
+                      <div key={c} className="flex items-center gap-2">
+                        <span className="w-28 text-slate-600 shrink-0">{c}{c === QTY_COL && isStock && <span className="text-red-500">*</span>}</span>
+                        <select value={qtyForMaster ? "" : (colMap[c] || "")} disabled={qtyForMaster}
+                          onChange={(e) => setColMap({ ...colMap, [c]: e.target.value })} className={sel + " flex-1 disabled:bg-slate-100"}>
+                          <option value="">{qtyForMaster ? "（主檔固定帶 0）" : "（空白）"}</option>
+                          {parsed.headers.map((h) => <option key={h} value={h}>{h}</option>)}
+                        </select>
+                      </div>
+                    );
+                  })}
+                </div>
+                <p className="text-xs text-slate-400 mt-2">{isStock ? "庫存檔：「庫存數量」為必填來源欄，帶入客戶數量。" : "主檔：「庫存數量」一律帶 0（不需對應來源欄）。"}</p>
+              </div>
             </div>
           )}
 
           <div className="flex items-center gap-3">
             <button onClick={produce} disabled={busy || !parsed}
               className="px-6 py-2.5 bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-400 text-white font-medium rounded-lg">
-              {busy ? "產製中…" : "⚙ 依店鋪切分並產製各店主檔"}
+              {busy ? "產製中…" : (isStock ? "⚙ 依店鋪切分並產製各店庫存檔" : "⚙ 依店鋪切分並產製各店主檔")}
             </button>
             {brandId && <span className="text-sm text-slate-500">本品牌本月 {stores.length} 家店鋪</span>}
           </div>
@@ -609,7 +670,7 @@ function UploadZone({ db, setDB, month, toast }) {
           <table className="w-full text-sm">
             <thead>
               <tr className="text-left text-slate-500 border-b">
-                <th className="py-2 pr-4">上傳日期</th><th className="py-2 pr-4">品牌</th><th className="py-2 pr-4">類型</th>
+                <th className="py-2 pr-4">上傳日期</th><th className="py-2 pr-4">品牌</th><th className="py-2 pr-4">用途</th>
                 <th className="py-2 pr-4">檔案名稱</th><th className="py-2 pr-4">產製店鋪數</th><th className="py-2 pr-4">資料筆數</th>
               </tr>
             </thead>
@@ -618,7 +679,7 @@ function UploadZone({ db, setDB, month, toast }) {
                 <tr key={u.id} className="border-b last:border-0">
                   <td className="py-2 pr-4">{u.uploadedAt}</td>
                   <td className="py-2 pr-4">{db.brands.find((b) => b.id === u.brandId)?.name}</td>
-                  <td className="py-2 pr-4">{u.type === "stock" ? "庫存檔" : "盤點主檔"}</td>
+                  <td className="py-2 pr-4">{u.type === "stock" ? "盤點當日庫存檔" : "盤點前主檔"}</td>
                   <td className="py-2 pr-4 font-mono">{u.fileName}</td>
                   <td className="py-2 pr-4">{u.storeCount}</td>
                   <td className="py-2 pr-4">{u.rowCount != null ? num(u.rowCount).toLocaleString() : "—"}</td>
@@ -976,7 +1037,7 @@ function MaintainZone({ db, setDB, month, setMonth, toast }) {
       {/* 上傳主檔（原上傳區併入） */}
       {tab === "upload" && (
         <div className="mt-4 fade-in">
-          <UploadZone db={db} setDB={setDB} month={month} toast={toast} embedded />
+          <UploadZone db={db} setDB={setDB} month={month} toast={toast} brandId={brandId} />
         </div>
       )}
 
