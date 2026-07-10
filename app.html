@@ -12,7 +12,21 @@
 </head>
 <body class="bg-slate-100 min-h-screen">
   <div id="root"></div>
-  <script src="api.js"></script>
-  <script type="text/babel" src="script.js"></script>
+  <script>
+    // 動態載入並加上時間戳，避免 GitHub Pages 快取到舊版（方便邊測試邊改，重整即最新）
+    (function () {
+      var v = Date.now();
+      var s1 = document.createElement('script');
+      s1.src = 'api.js?v=' + v;
+      s1.onload = function () {
+        var s2 = document.createElement('script');
+        s2.type = 'text/babel';
+        s2.src = 'script.js?v=' + v;
+        document.body.appendChild(s2);
+        if (window.Babel) window.Babel.transformScriptTags();
+      };
+      document.body.appendChild(s1);
+    })();
+  </script>
 </body>
 </html>

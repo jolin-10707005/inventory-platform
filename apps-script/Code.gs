@@ -71,7 +71,9 @@ function replaceTab(tab, rows) {
   var headers = collectHeaders(rows);
   var out = [headers];
   rows.forEach(function (r) { out.push(toLine(r, headers)); });
-  sh.getRange(1, 1, out.length, headers.length).setValues(out);
+  var range = sh.getRange(1, 1, out.length, headers.length);
+  range.setNumberFormat("@"); // 純文字格式，避免 "2026-07"、"21:00" 被 Sheets 自動轉成日期/時間
+  range.setValues(out);
 }
 
 function appendRow(tab, row) {
@@ -80,9 +82,14 @@ function appendRow(tab, row) {
   var headers = (values.length && values[0].join("") !== "") ? values[0] : null;
   if (!headers) {
     headers = Object.keys(row);
-    sh.getRange(1, 1, 1, headers.length).setValues([headers]);
+    var hr = sh.getRange(1, 1, 1, headers.length);
+    hr.setNumberFormat("@");
+    hr.setValues([headers]);
   }
-  sh.appendRow(toLine(row, headers));
+  var rowIndex = sh.getLastRow() + 1;
+  var range = sh.getRange(rowIndex, 1, 1, headers.length);
+  range.setNumberFormat("@"); // 同上，避免日期/時間欄位被自動轉型
+  range.setValues([toLine(row, headers)]);
 }
 
 var MAX_PHOTO_BYTES = 10 * 1024 * 1024; // 單張照片上限 10MB

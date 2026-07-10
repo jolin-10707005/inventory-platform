@@ -94,6 +94,10 @@ function calcHours(start, end) {
   return Math.round((mins / 60) * 100) / 100;
 }
 
+// 後端（Google Sheets 純文字格式）讀回的數值/布林為字串，統一轉型
+function num(v) { const n = Number(v); return isNaN(n) ? 0 : n; }
+function truthy(v) { return v === true || v === 1 || v === "1" || v === "true" || v === "TRUE" || v === "是"; }
+
 // 逸脫單一 CSV 儲存格，並防止公式注入（CSV Injection / CWE-1236）
 // 若儲存格開頭為 = + - @ tab 等，Excel 會當公式執行，故加上前綴 ' 中和
 function csvCell(v) {
@@ -211,12 +215,12 @@ function DownloadZone({ db, month, toast }) {
                     <td className="py-3 pr-4 font-mono">{s.code}</td>
                     <td className="py-3 pr-4">{s.name}</td>
                     <td className="py-3 pr-4">
-                      {p.master
+                      {truthy(p.master)
                         ? <button onClick={() => download(s, "master")} className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg">⬇ 下載</button>
                         : <span className="text-slate-400">尚未產製</span>}
                     </td>
                     <td className="py-3 pr-4">
-                      {p.stock
+                      {truthy(p.stock)
                         ? <button onClick={() => download(s, "stock")} className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg">⬇ 下載</button>
                         : <span className="text-slate-400">尚未產製</span>}
                     </td>
@@ -400,7 +404,7 @@ function FillZone({ db, setDB, month, user, toast }) {
                     <td className="py-2 pr-4">{store?.name}</td>
                     <td className="py-2 pr-4 font-mono">{r.startTime}–{r.endTime}</td>
                     <td className="py-2 pr-4">{r.headcount}</td>
-                    <td className="py-2 pr-4">{r.pieces.toLocaleString()}</td>
+                    <td className="py-2 pr-4">{num(r.pieces).toLocaleString()}</td>
                     <td className="py-2 pr-4 max-w-[200px] truncate" title={r.special}>{r.special || "—"}</td>
                     <td className="py-2 pr-4">{r.filledBy}</td>
                   </tr>
@@ -527,20 +531,23 @@ function AnalysisZone({ db, month, toast }) {
         const store = db.stores.find((s) => s.id === r.storeId);
         const brand = db.brands.find((b) => b.id === r.brandId);
         const price = db.prices.find((p) => p.storeId === r.storeId);
+        const pieces = num(r.pieces);          // 後端可能回字串，統一轉數字
+        const headcount = num(r.headcount);
+        const unitPrice = price ? num(price.unitPrice) : 0;
         const hoursVal = calcHours(r.startTime, r.endTime);
-        const manHours = Math.round(hoursVal * r.headcount * 100) / 100;
-        const efficiency = manHours > 0 ? Math.round(r.pieces / manHours) : 0;
+        const manHours = Math.round(hoursVal * headcount * 100) / 100;
+        const efficiency = manHours > 0 ? Math.round(pieces / manHours) : 0;
         let amount = 0, priceDesc = "未設定單價";
         if (price) {
           if (price.priceType === "piece") {
-            amount = Math.round(r.pieces * price.unitPrice);
-            priceDesc = `${price.unitPrice} 元/件`;
+            amount = Math.round(pieces * unitPrice);
+            priceDesc = `${unitPrice} 元/件`;
           } else {
-            amount = Math.round(manHours * price.unitPrice);
-            priceDesc = `${price.unitPrice} 元/人時`;
+            amount = Math.round(manHours * unitPrice);
+            priceDesc = `${unitPrice} 元/人時`;
           }
         }
-        return { ...r, storeName: store?.name || r.storeId, brandName: brand?.name, hoursVal, manHours, efficiency, amount, priceDesc };
+        return { ...r, pieces, headcount, storeName: store?.name || r.storeId, brandName: brand?.name, hoursVal, manHours, efficiency, amount, priceDesc };
       });
   }, [db, month, brandId]);
 
