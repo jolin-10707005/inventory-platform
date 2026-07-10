@@ -118,58 +118,85 @@ function uploadPhoto(dataUrl, filename) {
   return "https://drive.google.com/uc?id=" + file.getId();
 }
 
-/* ---------- 主檔（依店鋪切分後的資料，資料量大，單獨存取） ----------
- * masters 分頁欄位：storeId, month, type(master/stock), columns(JSON表頭), rows(JSON資料)
- * 一列 = 一家店某月的某類主檔。
+/* ---------- 主檔／庫存檔（資料量大：一個資料集 = 一個工作表，一列一筆） ----------
+ * 索引分頁 masters：storeId, month, type, sheet（指向實際資料工作表名稱）
+ * 資料工作表：第一列為欄位名稱，其後每列一筆。全部純文字格式。
+ * 這樣可容納數萬列，不受單一儲存格 5 萬字元限制。
  */
-var MASTER_HEADERS = ["storeId", "month", "type", "columns", "rows"];
+var MASTER_INDEX_HEADERS = ["storeId", "month", "type", "sheet"];
 
-function masterSheet() {
+function masterIndexSheet() {
   var sh = sheet("masters");
-  var values = sh.getDataRange().getValues();
-  if (values.length === 0 || values[0].join("") === "") {
-    var hr = sh.getRange(1, 1, 1, MASTER_HEADERS.length);
-    hr.setNumberFormat("@");
-    hr.setValues([MASTER_HEADERS]);
+  var v = sh.getDataRange().getValues();
+  if (v.length === 0 || v[0].join("") === "") {
+    var hr = sh.getRange(1, 1, 1, MASTER_INDEX_HEADERS.length);
+    hr.setNumberFormat("@"); hr.setValues([MASTER_INDEX_HEADERS]);
   }
   return sh;
 }
 
 function mastersIndex() {
-  var sh = masterSheet();
-  var values = sh.getDataRange().getValues();
+  var sh = masterIndexSheet();
+  var v = sh.getDataRange().getValues();
   var out = [];
-  for (var i = 1; i < values.length; i++) {
-    if (String(values[i][0]) === "") continue;
-    out.push({ storeId: values[i][0], month: values[i][1], type: values[i][2] });
+  for (var i = 1; i < v.length; i++) {
+    if (String(v[i][0]) === "") continue;
+    out.push({ storeId: v[i][0], month: v[i][1], type: v[i][2] });
   }
   return out;
 }
 
+// 依 storeId/month/type 產生合法且唯一的資料工作表名稱
+function dataSheetName(storeId, month, type) {
+  var raw = "D_" + storeId + "_" + month + "_" + type;
+  return raw.replace(/[:\\\/\?\*\[\]']/g, "_").substring(0, 95);
+}
+
 function getMaster(storeId, month, type) {
-  var sh = masterSheet();
-  var values = sh.getDataRange().getValues();
-  for (var i = 1; i < values.length; i++) {
-    if (String(values[i][0]) === String(storeId) && String(values[i][1]) === String(month) && String(values[i][2]) === String(type)) {
-      return { columns: safeParse(values[i][3], []), rows: safeParse(values[i][4], []) };
-    }
+  var sh = masterIndexSheet();
+  var v = sh.getDataRange().getValues();
+  var name = null;
+  for (var i = 1; i < v.length; i++) {
+    if (String(v[i][0]) === String(storeId) && String(v[i][1]) === String(month) && String(v[i][2]) === String(type)) { name = v[i][3]; break; }
   }
-  return null;
+  if (!name) return null;
+  var ds = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(name);
+  if (!ds) return null;
+  var dv = ds.getDataRange().getValues();
+  if (dv.length < 1) return { columns: [], rows: [] };
+  var cols = dv[0];
+  var rows = [];
+  for (var r = 1; r < dv.length; r++) {
+    if (dv[r].join("") === "") continue;
+    var o = {};
+    for (var c = 0; c < cols.length; c++) o[cols[c]] = dv[r][c];
+    rows.push(o);
+  }
+  return { columns: cols, rows: rows };
 }
 
 function putMaster(rec) {
-  var sh = masterSheet();
-  var line = [rec.storeId, rec.month, rec.type, JSON.stringify(rec.columns || []), JSON.stringify(rec.rows || [])];
-  var values = sh.getDataRange().getValues();
-  for (var i = 1; i < values.length; i++) {
-    if (String(values[i][0]) === String(rec.storeId) && String(values[i][1]) === String(rec.month) && String(values[i][2]) === String(rec.type)) {
-      var rg = sh.getRange(i + 1, 1, 1, MASTER_HEADERS.length);
-      rg.setNumberFormat("@"); rg.setValues([line]); return;
-    }
+  var name = dataSheetName(rec.storeId, rec.month, rec.type);
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var ds = ss.getSheetByName(name);
+  if (!ds) ds = ss.insertSheet(name); else ds.clear();
+  var cols = rec.columns || [];
+  var rows = rec.rows || [];
+  if (cols.length) {
+    var out = [cols];
+    rows.forEach(function (r) { out.push(cols.map(function (c) { var v = r[c]; return v == null ? "" : v; })); });
+    var rg = ds.getRange(1, 1, out.length, cols.length);
+    rg.setNumberFormat("@"); rg.setValues(out);
+  }
+  // 索引 upsert
+  var sh = masterIndexSheet();
+  var v = sh.getDataRange().getValues();
+  for (var i = 1; i < v.length; i++) {
+    if (String(v[i][0]) === String(rec.storeId) && String(v[i][1]) === String(rec.month) && String(v[i][2]) === String(rec.type)) return;
   }
   var ri = sh.getLastRow() + 1;
-  var rg2 = sh.getRange(ri, 1, 1, MASTER_HEADERS.length);
-  rg2.setNumberFormat("@"); rg2.setValues([line]);
+  var rg2 = sh.getRange(ri, 1, 1, MASTER_INDEX_HEADERS.length);
+  rg2.setNumberFormat("@"); rg2.setValues([[rec.storeId, rec.month, rec.type, name]]);
 }
 
 function safeParse(v, dft) {
