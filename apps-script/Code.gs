@@ -11,11 +11,13 @@
 // 盤點照片要存放的 Google Drive 資料夾 ID（即使用者提供的資料夾）
 var PHOTO_FOLDER_ID = "1h9qjSAx2-sojs5_uP307qmBUvw-XiDhn";
 
-var TABS = ["brands", "stores", "staff", "prices", "produced", "records", "uploads"];
+var TABS = ["brands", "stores", "staff", "prices", "records", "uploads"];
 
 function doGet(e) {
-  var action = (e && e.parameter && e.parameter.action) || "getAll";
+  var p = (e && e.parameter) || {};
+  var action = p.action || "getAll";
   if (action === "getAll") return jsonOut(getAll());
+  if (action === "getMaster") return jsonOut(getMaster(p.storeId, p.month, p.type));
   return jsonOut({ error: "unknown action: " + action });
 }
 
@@ -30,6 +32,9 @@ function doPost(e) {
       return jsonOut({ ok: true });
     case "uploadPhoto":
       return jsonOut({ ok: true, url: uploadPhoto(body.dataUrl, body.filename) });
+    case "putMaster":
+      putMaster(body.rec);
+      return jsonOut({ ok: true });
     default:
       return jsonOut({ error: "unknown action: " + body.action });
   }
@@ -39,6 +44,7 @@ function doPost(e) {
 function getAll() {
   var db = {};
   TABS.forEach(function (tab) { db[tab] = readTab(tab); });
+  db.mastersIndex = mastersIndex(); // 主檔只回傳「哪些店有檔」的輕量索引，實際內容用 getMaster 單獨抓
   return db;
 }
 
@@ -110,6 +116,64 @@ function uploadPhoto(dataUrl, filename) {
   var file = DriveApp.getFolderById(PHOTO_FOLDER_ID).createFile(blob);
   file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
   return "https://drive.google.com/uc?id=" + file.getId();
+}
+
+/* ---------- 主檔（依店鋪切分後的資料，資料量大，單獨存取） ----------
+ * masters 分頁欄位：storeId, month, type(master/stock), columns(JSON表頭), rows(JSON資料)
+ * 一列 = 一家店某月的某類主檔。
+ */
+var MASTER_HEADERS = ["storeId", "month", "type", "columns", "rows"];
+
+function masterSheet() {
+  var sh = sheet("masters");
+  var values = sh.getDataRange().getValues();
+  if (values.length === 0 || values[0].join("") === "") {
+    var hr = sh.getRange(1, 1, 1, MASTER_HEADERS.length);
+    hr.setNumberFormat("@");
+    hr.setValues([MASTER_HEADERS]);
+  }
+  return sh;
+}
+
+function mastersIndex() {
+  var sh = masterSheet();
+  var values = sh.getDataRange().getValues();
+  var out = [];
+  for (var i = 1; i < values.length; i++) {
+    if (String(values[i][0]) === "") continue;
+    out.push({ storeId: values[i][0], month: values[i][1], type: values[i][2] });
+  }
+  return out;
+}
+
+function getMaster(storeId, month, type) {
+  var sh = masterSheet();
+  var values = sh.getDataRange().getValues();
+  for (var i = 1; i < values.length; i++) {
+    if (String(values[i][0]) === String(storeId) && String(values[i][1]) === String(month) && String(values[i][2]) === String(type)) {
+      return { columns: safeParse(values[i][3], []), rows: safeParse(values[i][4], []) };
+    }
+  }
+  return null;
+}
+
+function putMaster(rec) {
+  var sh = masterSheet();
+  var line = [rec.storeId, rec.month, rec.type, JSON.stringify(rec.columns || []), JSON.stringify(rec.rows || [])];
+  var values = sh.getDataRange().getValues();
+  for (var i = 1; i < values.length; i++) {
+    if (String(values[i][0]) === String(rec.storeId) && String(values[i][1]) === String(rec.month) && String(values[i][2]) === String(rec.type)) {
+      var rg = sh.getRange(i + 1, 1, 1, MASTER_HEADERS.length);
+      rg.setNumberFormat("@"); rg.setValues([line]); return;
+    }
+  }
+  var ri = sh.getLastRow() + 1;
+  var rg2 = sh.getRange(ri, 1, 1, MASTER_HEADERS.length);
+  rg2.setNumberFormat("@"); rg2.setValues([line]);
+}
+
+function safeParse(v, dft) {
+  try { return JSON.parse(v); } catch (e) { return dft; }
 }
 
 /* ---------- 工具 ---------- */

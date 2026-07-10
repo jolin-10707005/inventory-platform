@@ -16,6 +16,7 @@ const API_CONFIG = {
 };
 
 const _DB_KEY = "inv-platform-db-v1";
+const _MASTERS_KEY = "inv-platform-masters-v1";
 
 const InventoryAPI = {
   /** 是否為雲端（Google Sheets）模式 */
@@ -29,9 +30,32 @@ const InventoryAPI = {
     }
     try {
       const raw = localStorage.getItem(_DB_KEY);
-      if (raw) return JSON.parse(raw);
+      if (raw) {
+        const db = JSON.parse(raw);
+        db.mastersIndex = this._localMasters().map((m) => ({ storeId: m.storeId, month: m.month, type: m.type }));
+        return db;
+      }
     } catch (e) { /* 資料毀損時回退種子 */ }
     return null;
+  },
+
+  /** 讀取單一店鋪主檔（含完整資料列）。回傳 { columns, rows } 或 null */
+  async getMaster(storeId, month, type) {
+    if (this.cloud()) {
+      const res = await fetch(API_CONFIG.APPS_SCRIPT_URL +
+        `?action=getMaster&storeId=${encodeURIComponent(storeId)}&month=${encodeURIComponent(month)}&type=${encodeURIComponent(type)}`);
+      return await res.json();
+    }
+    const m = this._localMasters().find((x) => x.storeId === storeId && x.month === month && x.type === type);
+    return m ? { columns: m.columns, rows: m.rows } : null;
+  },
+
+  /** 寫入/覆蓋單一店鋪主檔 rec = { storeId, month, type, columns, rows } */
+  async putMaster(rec) {
+    if (this.cloud()) { await this._post({ action: "putMaster", rec }); return; }
+    const list = this._localMasters().filter((x) => !(x.storeId === rec.storeId && x.month === rec.month && x.type === rec.type));
+    list.push(rec);
+    localStorage.setItem(_MASTERS_KEY, JSON.stringify(list));
   },
 
   /** 寫回指定分頁（維護類資料用；整批覆蓋該分頁） */
@@ -54,7 +78,11 @@ const InventoryAPI = {
   },
 
   /* ---------- 內部方法 ---------- */
-  _localSave(db) { localStorage.setItem(_DB_KEY, JSON.stringify(db)); },
+  _localSave(db) {
+    const { mastersIndex, ...rest } = db; // mastersIndex 為衍生資料，不存進主 DB
+    localStorage.setItem(_DB_KEY, JSON.stringify(rest));
+  },
+  _localMasters() { try { return JSON.parse(localStorage.getItem(_MASTERS_KEY) || "[]"); } catch (e) { return []; } },
 
   async _post(payload) {
     // 不設 Content-Type → 送出為 text/plain（簡單請求），避免 Apps Script 的 CORS 預檢問題

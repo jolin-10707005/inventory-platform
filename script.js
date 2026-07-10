@@ -47,12 +47,6 @@ const seedDB = {
     { storeId: "S006", priceType: "piece", unitPrice: 0.6 },
     { storeId: "S007", priceType: "piece", unitPrice: 0.6 },
   ],
-  // 上傳區產製結果：哪些店鋪的主檔 / 庫存檔已可下載
-  produced: [
-    { storeId: "S001", month: CURRENT_MONTH, master: true, stock: true },
-    { storeId: "S002", month: CURRENT_MONTH, master: true, stock: true },
-    { storeId: "S004", month: CURRENT_MONTH, master: true, stock: false },
-  ],
   // 填寫區作業紀錄
   records: [
     {
@@ -75,7 +69,7 @@ const seedDB = {
  * 維護類資料（單一管理者編輯）→ 整表覆蓋（ADMIN_TABS）
  * 盤點/上傳紀錄（多裝置同時新增）→ 逐筆 append，避免互相覆蓋
  */
-const ADMIN_TABS = ["brands", "stores", "staff", "prices", "produced"];
+const ADMIN_TABS = ["brands", "stores", "staff", "prices"];
 const ALL_TABS = [...ADMIN_TABS, "records", "uploads"];
 function seed() { return JSON.parse(JSON.stringify(seedDB)); }
 
@@ -98,23 +92,41 @@ function calcHours(start, end) {
 function num(v) { const n = Number(v); return isNaN(n) ? 0 : n; }
 function truthy(v) { return v === true || v === 1 || v === "1" || v === "true" || v === "TRUE" || v === "是"; }
 
-// 逸脫單一 CSV 儲存格，並防止公式注入（CSV Injection / CWE-1236）
-// 若儲存格開頭為 = + - @ tab 等，Excel 會當公式執行，故加上前綴 ' 中和
-function csvCell(v) {
-  let s = v == null ? "" : String(v);
-  if (/^[=+\-@\t\r]/.test(s)) s = "'" + s;
-  return '"' + s.replace(/"/g, '""') + '"';
+/* ---------------- Excel（.xlsx）匯入 / 匯出（SheetJS） ---------------- */
+// 防公式注入：字串開頭為 = + - @ 時加前綴 '（即使 xlsx 以文字寫入仍多一層保險）
+function safeCell(v) {
+  if (typeof v === "string" && /^[=+\-@]/.test(v)) return "'" + v;
+  return v == null ? "" : v;
 }
 
-// 下載 CSV（含 BOM，Excel 開啟不亂碼；每格逸脫並防公式注入）
-function downloadCSV(filename, rows) {
-  const csv = "﻿" + rows.map((r) => r.map(csvCell).join(",")).join("\r\n");
-  const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
-  const a = document.createElement("a");
-  a.href = URL.createObjectURL(blob);
-  a.download = filename;
-  a.click();
-  URL.revokeObjectURL(a.href);
+// 匯出 .xlsx；aoa = 二維陣列（第一列為表頭）
+function exportXLSX(filename, sheetName, aoa) {
+  const clean = aoa.map((row) => row.map(safeCell));
+  const ws = XLSX.utils.aoa_to_sheet(clean);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, (sheetName || "工作表1").slice(0, 31));
+  XLSX.writeFile(wb, filename);
+}
+
+// 讀取上傳的 .xlsx / .xls；回傳 { headers:[...], rows:[{欄名:值}] }
+function readXLSX(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        const wb = XLSX.read(e.target.result, { type: "array" });
+        const ws = wb.Sheets[wb.SheetNames[0]];
+        const aoa = XLSX.utils.sheet_to_json(ws, { header: 1, defval: "", raw: false });
+        const headers = (aoa[0] || []).map((h) => String(h).trim()).filter((h) => h !== "");
+        const rows = aoa.slice(1)
+          .filter((r) => r.some((c) => String(c).trim() !== ""))
+          .map((r) => { const o = {}; headers.forEach((h, i) => { o[h] = r[i] == null ? "" : r[i]; }); return o; });
+        resolve({ headers, rows });
+      } catch (err) { reject(err); }
+    };
+    reader.onerror = reject;
+    reader.readAsArrayBuffer(file);
+  });
 }
 
 /* ---------------- 共用元件 ---------------- */
@@ -163,25 +175,37 @@ function BrandStoreSelect({ db, brandId, storeId, month, onBrand, onStore, showS
  * ============================================================ */
 function DownloadZone({ db, month, toast }) {
   const [brandId, setBrandId] = useState("");
+  const [busy, setBusy] = useState("");
   const stores = db.stores.filter((s) => s.brandId === brandId && s.month === month);
   const brand = db.brands.find((b) => b.id === brandId);
+  const index = db.mastersIndex || [];
 
-  const producedOf = (storeId) =>
-    db.produced.find((p) => p.storeId === storeId && p.month === month) || {};
+  // 該店某類主檔是否已產製（依 mastersIndex 輕量索引判斷）
+  const has = (storeId, type) => index.some((m) => m.storeId === storeId && m.month === month && m.type === type);
 
-  // TODO: IT 工程師請在此串接後端 API 邏輯（GET /api/files/master、/api/files/stock）
-  const download = (store, type) => {
+  // 下載時「先抓最新」，產出該店真實主檔 .xlsx（下載前抓最新，確保為最新資料）
+  const download = async (store, type) => {
     const label = type === "master" ? "盤點主檔" : "庫存檔";
-    downloadCSV(`${store.code}_${label}_${month}.csv`, [
-      ["店鋪代碼", "商品條碼", "品名", "規格", type === "master" ? "售價" : "庫存量"],
-      [store.code, "4710000000011", "範例商品A", "M", type === "master" ? "590" : "12"],
-      [store.code, "4710000000028", "範例商品B", "L", type === "master" ? "790" : "8"],
-    ]);
-    toast(`已下載 ${store.name} ${label}`);
+    setBusy(store.id + type);
+    try {
+      const m = await InventoryAPI.getMaster(store.id, month, type);
+      if (!m || !m.columns || m.columns.length === 0) { toast("查無此店主檔，請重新整理或請管理者產製"); return; }
+      const aoa = [m.columns, ...m.rows.map((r) => m.columns.map((c) => r[c]))];
+      exportXLSX(`${store.code}_${label}_${month}.xlsx`, label, aoa);
+      toast(`已下載 ${store.name} ${label}（${m.rows.length} 筆）`);
+    } catch (e) {
+      toast("下載失敗，請確認網路後再試");
+    } finally { setBusy(""); }
   };
 
+  const cell = (s, type) => has(s.id, type)
+    ? <button disabled={busy === s.id + type} onClick={() => download(s, type)}
+        className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 disabled:bg-slate-400 text-white rounded-lg">
+        {busy === s.id + type ? "下載中…" : "⬇ 下載"}</button>
+    : <span className="text-slate-400">尚未產製</span>;
+
   return (
-    <SectionCard title="📥 下載區" subtitle="盤點人員下載各盤點店鋪的盤點主檔、庫存檔及盤點手冊">
+    <SectionCard title="📥 下載區" subtitle="盤點人員下載各盤點店鋪的盤點主檔、庫存檔（Excel）及盤點手冊">
       <BrandStoreSelect db={db} brandId={brandId} month={month} onBrand={setBrandId} showStore={false} />
 
       {brand && (
@@ -208,25 +232,14 @@ function DownloadZone({ db, month, toast }) {
               </tr>
             </thead>
             <tbody>
-              {stores.map((s) => {
-                const p = producedOf(s.id);
-                return (
-                  <tr key={s.id} className="border-b last:border-0">
-                    <td className="py-3 pr-4 font-mono">{s.code}</td>
-                    <td className="py-3 pr-4">{s.name}</td>
-                    <td className="py-3 pr-4">
-                      {truthy(p.master)
-                        ? <button onClick={() => download(s, "master")} className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg">⬇ 下載</button>
-                        : <span className="text-slate-400">尚未產製</span>}
-                    </td>
-                    <td className="py-3 pr-4">
-                      {truthy(p.stock)
-                        ? <button onClick={() => download(s, "stock")} className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg">⬇ 下載</button>
-                        : <span className="text-slate-400">尚未產製</span>}
-                    </td>
-                  </tr>
-                );
-              })}
+              {stores.map((s) => (
+                <tr key={s.id} className="border-b last:border-0">
+                  <td className="py-3 pr-4 font-mono">{s.code}</td>
+                  <td className="py-3 pr-4">{s.name}</td>
+                  <td className="py-3 pr-4">{cell(s, "master")}</td>
+                  <td className="py-3 pr-4">{cell(s, "stock")}</td>
+                </tr>
+              ))}
               {stores.length === 0 && (
                 <tr><td colSpan="4" className="py-6 text-center text-slate-400">此品牌本月尚無店鋪名單，請至維護區上傳</td></tr>
               )}
@@ -424,64 +437,119 @@ function FillZone({ db, setDB, month, user, toast }) {
  * ============================================================ */
 function UploadZone({ db, setDB, month, toast }) {
   const [brandId, setBrandId] = useState("");
+  const [fileType, setFileType] = useState("master"); // master=盤點主檔, stock=庫存檔
   const [file, setFile] = useState(null);
-  const [fileErr, setFileErr] = useState("");
+  const [parsed, setParsed] = useState(null);          // { headers, rows }
+  const [storeCol, setStoreCol] = useState("");        // 哪一欄對應店鋪
+  const [matchBy, setMatchBy] = useState("code");      // 以店鋪代碼或名稱對應
+  const [busy, setBusy] = useState(false);
   const stores = db.stores.filter((s) => s.brandId === brandId && s.month === month);
   const brand = db.brands.find((b) => b.id === brandId);
 
-  // 資料驗證規則：僅接受 Excel / CSV 格式
-  const onFile = (e) => {
+  // 選檔後立即解析 Excel，讀出表頭供對應
+  const onFile = async (e) => {
     const f = e.target.files[0];
     if (!f) return;
-    if (!/\.(xlsx|xls|csv)$/i.test(f.name)) {
-      setFileErr("檔案格式錯誤：僅接受 .xlsx / .xls / .csv");
-      setFile(null);
-      return;
-    }
-    setFileErr("");
-    setFile(f);
+    if (!/\.(xlsx|xls)$/i.test(f.name)) { toast("僅接受 Excel 檔（.xlsx / .xls）"); e.target.value = ""; return; }
+    setFile(f); setParsed(null); setStoreCol("");
+    try {
+      const { headers, rows } = await readXLSX(f);
+      if (headers.length === 0 || rows.length === 0) { toast("檔案沒有可讀取的資料列"); return; }
+      setParsed({ headers, rows });
+      // 自動猜測店鋪欄位
+      const guess = headers.find((h) => /店|門市|store|shop|代碼|code/i.test(h));
+      setStoreCol(guess || headers[0]);
+    } catch (err) { toast("Excel 解析失敗，請確認檔案格式"); }
   };
 
-  // 依店鋪格式產製主檔/庫存檔：更新 produced（維護類，自動同步）+ append 一筆上傳紀錄
-  // TODO: 未來改接日翊資料庫時，對應後端解析並依盤點程式格式產製
+  // 依店鋪欄位切分，逐店寫入主檔；並記錄一筆上傳紀錄
   const produce = async () => {
     if (!brandId) { toast("請先選擇品牌"); return; }
-    if (!file) { toast("請先上傳客戶提供的主檔（庫存檔）"); return; }
-    if (stores.length === 0) { toast("此品牌本月尚無店鋪名單，請先至維護區上傳"); return; }
+    if (!parsed) { toast("請先上傳並解析客戶主檔（Excel）"); return; }
+    if (stores.length === 0) { toast("此品牌本月尚無店鋪名單，請先至維護區建立"); return; }
+    if (!storeCol) { toast("請選擇對應店鋪的欄位"); return; }
 
-    const others = db.produced.filter((p) => !(p.month === month && stores.some((s) => s.id === p.storeId)));
-    const newProduced = stores.map((s) => ({ storeId: s.id, month, master: true, stock: true }));
-    const uploadRec = { id: uid("U"), brandId, month, fileName: file.name, storeCount: stores.length, uploadedAt: new Date().toISOString().slice(0, 10) };
-    const next = { ...db, produced: [...others, ...newProduced], uploads: [...db.uploads, uploadRec] };
-    setDB(next);
-    await InventoryAPI.appendRow(next, "uploads", uploadRec);
-    toast(`已依 ${brand.name} ${stores.length} 家店鋪格式產製主檔與庫存檔 ✔（下載區可下載）`);
-    setFile(null);
+    setBusy(true);
+    try {
+      // 依 storeCol 分組
+      const groups = {}; // key = 該欄的值
+      parsed.rows.forEach((r) => {
+        const key = String(r[storeCol]).trim();
+        (groups[key] = groups[key] || []).push(r);
+      });
+      // 對應到店鋪
+      let matched = 0, unmatchedKeys = [], addedIdx = [];
+      for (const key of Object.keys(groups)) {
+        const store = stores.find((s) => String(matchBy === "code" ? s.code : s.name).trim() === key);
+        if (!store) { if (key) unmatchedKeys.push(key); continue; }
+        await InventoryAPI.putMaster({ storeId: store.id, month, type: fileType, columns: parsed.headers, rows: groups[key] });
+        addedIdx.push({ storeId: store.id, month, type: fileType });
+        matched++;
+      }
+      // 上傳紀錄 + 樂觀更新 mastersIndex（下載區立即可見）
+      const uploadRec = { id: uid("U"), brandId, month, type: fileType, fileName: file.name, storeCount: matched, rowCount: parsed.rows.length, uploadedAt: new Date().toISOString().slice(0, 10) };
+      const idx = (db.mastersIndex || []).filter((m) => !addedIdx.some((a) => a.storeId === m.storeId && a.month === m.month && a.type === m.type));
+      const next = { ...db, uploads: [...db.uploads, uploadRec], mastersIndex: [...idx, ...addedIdx] };
+      setDB(next);
+      await InventoryAPI.appendRow(next, "uploads", uploadRec);
+
+      const label = fileType === "master" ? "盤點主檔" : "庫存檔";
+      let msg = `已產製 ${matched} 家店鋪的${label}（共 ${parsed.rows.length} 筆）✔`;
+      if (unmatchedKeys.length) msg += `；有 ${unmatchedKeys.length} 個店鋪值未對應（例：${unmatchedKeys.slice(0, 2).join("、")}）`;
+      toast(msg);
+      setFile(null); setParsed(null); setStoreCol("");
+    } catch (e) {
+      toast("產製失敗，請確認網路後再試");
+    } finally { setBusy(false); }
   };
 
   const history = db.uploads.filter((u) => u.month === month);
+  const sel = "px-3 py-2 border border-slate-300 rounded-lg text-sm bg-white focus:ring-2 focus:ring-blue-500 outline-none";
 
   return (
     <div className="space-y-6">
-      <SectionCard title="📤 上傳區" subtitle="上傳客戶提供的主檔（庫存檔），依店鋪及盤點程式規定格式產製各盤點店鋪所需主檔">
+      <SectionCard title="📤 上傳區" subtitle="上傳客戶提供的主檔（Excel），依店鋪欄位切分產製各盤點店鋪所需主檔／庫存檔">
         <div className="space-y-4">
-          <BrandStoreSelect db={db} brandId={brandId} month={month} onBrand={setBrandId} showStore={false} />
+          <div className="flex flex-wrap gap-3 items-center">
+            <BrandStoreSelect db={db} brandId={brandId} month={month} onBrand={setBrandId} showStore={false} />
+            <select value={fileType} onChange={(e) => setFileType(e.target.value)} className={sel}>
+              <option value="master">檔案類型：盤點主檔</option>
+              <option value="stock">檔案類型：庫存檔</option>
+            </select>
+          </div>
 
           <div className="border-2 border-dashed border-slate-300 rounded-xl p-8 text-center bg-slate-50">
             <div className="text-4xl mb-2">📄</div>
-            <p className="text-sm text-slate-600 mb-3">上傳客戶提供的主檔 / 庫存檔（.xlsx / .xls / .csv）</p>
-            <input type="file" accept=".xlsx,.xls,.csv" onChange={onFile}
+            <p className="text-sm text-slate-600 mb-3">上傳客戶提供的主檔 / 庫存檔（Excel：.xlsx / .xls）</p>
+            <input type="file" accept=".xlsx,.xls" onChange={onFile}
               className="mx-auto block text-sm text-slate-500 file:mr-3 file:px-4 file:py-2 file:rounded-lg file:border-0 file:bg-blue-600 file:text-white hover:file:bg-blue-700" />
-            {fileErr && <p className="text-sm text-red-600 mt-2">{fileErr}</p>}
-            {file && <p className="text-sm text-emerald-600 mt-2">✔ 已選擇：{file.name}</p>}
+            {file && parsed && <p className="text-sm text-emerald-600 mt-2">✔ {file.name}：讀到 {parsed.headers.length} 欄、{parsed.rows.length} 筆資料</p>}
           </div>
 
+          {parsed && (
+            <div className="bg-white border border-slate-200 rounded-xl p-4 space-y-3">
+              <p className="text-sm font-medium text-slate-700">設定切分方式</p>
+              <div className="flex flex-wrap gap-3 items-center text-sm">
+                <span className="text-slate-600">以此欄對應店鋪：</span>
+                <select value={storeCol} onChange={(e) => setStoreCol(e.target.value)} className={sel}>
+                  {parsed.headers.map((h) => <option key={h} value={h}>{h}</option>)}
+                </select>
+                <span className="text-slate-600">對應到店鋪的：</span>
+                <select value={matchBy} onChange={(e) => setMatchBy(e.target.value)} className={sel}>
+                  <option value="code">店鋪代碼</option>
+                  <option value="name">店鋪名稱</option>
+                </select>
+              </div>
+              <p className="text-xs text-slate-400">系統會依「{storeCol}」欄的值，比對本品牌店鋪的{matchBy === "code" ? "代碼" : "名稱"}，切分成各店主檔。</p>
+            </div>
+          )}
+
           <div className="flex items-center gap-3">
-            <button onClick={produce}
-              className="px-6 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white font-medium rounded-lg">
-              ⚙ 依店鋪格式產製各店主檔（庫存檔）
+            <button onClick={produce} disabled={busy || !parsed}
+              className="px-6 py-2.5 bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-400 text-white font-medium rounded-lg">
+              {busy ? "產製中…" : "⚙ 依店鋪切分並產製各店主檔"}
             </button>
-            {brandId && <span className="text-sm text-slate-500">將產製 {stores.length} 家店鋪的檔案</span>}
+            {brandId && <span className="text-sm text-slate-500">本品牌本月 {stores.length} 家店鋪</span>}
           </div>
         </div>
       </SectionCard>
@@ -491,8 +559,8 @@ function UploadZone({ db, setDB, month, toast }) {
           <table className="w-full text-sm">
             <thead>
               <tr className="text-left text-slate-500 border-b">
-                <th className="py-2 pr-4">上傳日期</th><th className="py-2 pr-4">品牌</th>
-                <th className="py-2 pr-4">檔案名稱</th><th className="py-2 pr-4">產製店鋪數</th><th className="py-2 pr-4">狀態</th>
+                <th className="py-2 pr-4">上傳日期</th><th className="py-2 pr-4">品牌</th><th className="py-2 pr-4">類型</th>
+                <th className="py-2 pr-4">檔案名稱</th><th className="py-2 pr-4">產製店鋪數</th><th className="py-2 pr-4">資料筆數</th>
               </tr>
             </thead>
             <tbody>
@@ -500,12 +568,13 @@ function UploadZone({ db, setDB, month, toast }) {
                 <tr key={u.id} className="border-b last:border-0">
                   <td className="py-2 pr-4">{u.uploadedAt}</td>
                   <td className="py-2 pr-4">{db.brands.find((b) => b.id === u.brandId)?.name}</td>
+                  <td className="py-2 pr-4">{u.type === "stock" ? "庫存檔" : "盤點主檔"}</td>
                   <td className="py-2 pr-4 font-mono">{u.fileName}</td>
                   <td className="py-2 pr-4">{u.storeCount}</td>
-                  <td className="py-2 pr-4"><span className="px-2 py-1 bg-emerald-100 text-emerald-700 rounded-full text-xs">已產製</span></td>
+                  <td className="py-2 pr-4">{u.rowCount != null ? num(u.rowCount).toLocaleString() : "—"}</td>
                 </tr>
               ))}
-              {history.length === 0 && <tr><td colSpan="5" className="py-6 text-center text-slate-400">本月尚無上傳紀錄</td></tr>}
+              {history.length === 0 && <tr><td colSpan="6" className="py-6 text-center text-slate-400">本月尚無上傳紀錄</td></tr>}
             </tbody>
           </table>
         </div>
@@ -555,14 +624,14 @@ function AnalysisZone({ db, month, toast }) {
     pieces: a.pieces + r.pieces, manHours: a.manHours + r.manHours, amount: a.amount + r.amount,
   }), { pieces: 0, manHours: 0, amount: 0 });
 
-  // TODO: IT 工程師請在此串接後端 API 邏輯（GET /api/analysis/export）
-  const exportCSV = () => {
-    downloadCSV(`請款資料_${month}.csv`, [
+  const exportExcel = () => {
+    if (rows.length === 0) { toast("目前沒有可匯出的資料"); return; }
+    exportXLSX(`請款資料_${month}.xlsx`, `請款資料_${month}`, [
       ["品牌", "店鋪", "盤點日期", "件數", "人數", "時數", "人時", "人時效率(件/人時)", "計價方式", "請款金額"],
       ...rows.map((r) => [r.brandName, r.storeName, r.date, r.pieces, r.headcount, r.hoursVal, r.manHours, r.efficiency, r.priceDesc, r.amount]),
       ["合計", "", "", totals.pieces, "", "", totals.manHours, "", "", totals.amount],
     ]);
-    toast("請款資料 CSV 已匯出 ✔");
+    toast("請款資料 Excel 已匯出 ✔");
   };
 
   const Stat = ({ label, value, unit }) => (
@@ -576,8 +645,8 @@ function AnalysisZone({ db, month, toast }) {
     <SectionCard title="📊 數據分析區" subtitle="依填寫區資料自動產出作業效率分析及請款資料">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <BrandStoreSelect db={db} brandId={brandId} month={month} onBrand={setBrandId} showStore={false} />
-        <button onClick={exportCSV} className="px-5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-medium rounded-lg">
-          ⬇ 匯出請款資料（CSV）
+        <button onClick={exportExcel} className="px-5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-medium rounded-lg">
+          ⬇ 匯出請款資料（Excel）
         </button>
       </div>
 
@@ -659,30 +728,42 @@ function MaintainZone({ db, setDB, month, setMonth, toast }) {
     toast("盤點人員已新增 ✔");
   };
 
-  // Excel 匯入（原型模擬：實際解析由後端處理）
-  // TODO: IT 工程師請在此串接後端 API 邏輯（POST /api/import/stores、/api/import/staff）
-  const importExcel = (kind) => (e) => {
+  // 匯入範本欄位
+  const TEMPLATES = {
+    stores: ["店鋪代碼", "店鋪名稱"],
+    staff: ["員工編號", "姓名"],
+  };
+  // 下載匯入範本（Excel）
+  const downloadTemplate = (kind) => {
+    const label = kind === "stores" ? "店鋪名單" : "盤點人員名單";
+    exportXLSX(`${label}_匯入範本.xlsx`, label, [TEMPLATES[kind], kind === "stores" ? ["AS-001", "範例店鋪"] : ["E001", "範例姓名"]]);
+    toast(`已下載${label}匯入範本`);
+  };
+
+  // 真正解析 Excel 匯入（依範本欄位；也容錯常見別名）
+  const importExcel = (kind) => async (e) => {
     const f = e.target.files[0];
-    if (!f) return;
-    if (!/\.(xlsx|xls|csv)$/i.test(f.name)) { toast("僅接受 .xlsx / .xls / .csv 檔案"); return; }
-    if (kind === "stores") {
-      const n = stores.length + 1;
-      setDB((d) => ({
-        ...d, stores: [...d.stores,
-          { id: uid("S"), brandId, month, code: `IMP-${String(n).padStart(3, "0")}`, name: `匯入店鋪範例${n}` },
-          { id: uid("S"), brandId, month, code: `IMP-${String(n + 1).padStart(3, "0")}`, name: `匯入店鋪範例${n + 1}` },
-        ],
-      }));
-      toast(`已模擬匯入店鋪名單（${f.name}）✔`);
-    } else {
-      const n = staff.length + 1;
-      setDB((d) => ({
-        ...d, staff: [...d.staff,
-          { id: uid("P"), brandId, month, empNo: `IMP${String(n).padStart(3, "0")}`, name: `匯入人員範例${n}` },
-        ],
-      }));
-      toast(`已模擬匯入盤點人員名單（${f.name}）✔`);
-    }
+    if (!f) { return; }
+    if (!/\.(xlsx|xls)$/i.test(f.name)) { toast("僅接受 Excel 檔（.xlsx / .xls）"); e.target.value = ""; return; }
+    try {
+      const { headers, rows } = await readXLSX(f);
+      const pick = (row, names) => { for (const n of names) { const k = headers.find((h) => h === n); if (k && String(row[k]).trim() !== "") return String(row[k]).trim(); } return ""; };
+      if (kind === "stores") {
+        const items = rows.map((r) => ({ code: pick(r, ["店鋪代碼", "代碼", "code"]), name: pick(r, ["店鋪名稱", "名稱", "name"]) }))
+          .filter((x) => x.code && x.name)
+          .map((x) => ({ id: uid("S"), brandId, month, code: x.code, name: x.name }));
+        if (items.length === 0) { toast("未讀到有效店鋪資料，請用範本格式（店鋪代碼／店鋪名稱）"); e.target.value = ""; return; }
+        setDB((d) => ({ ...d, stores: [...d.stores, ...items] }));
+        toast(`已匯入 ${items.length} 家店鋪 ✔`);
+      } else {
+        const items = rows.map((r) => ({ empNo: pick(r, ["員工編號", "員編", "empNo"]), name: pick(r, ["姓名", "名稱", "name"]) }))
+          .filter((x) => x.empNo && x.name)
+          .map((x) => ({ id: uid("P"), brandId, month, empNo: x.empNo, name: x.name }));
+        if (items.length === 0) { toast("未讀到有效人員資料，請用範本格式（員工編號／姓名）"); e.target.value = ""; return; }
+        setDB((d) => ({ ...d, staff: [...d.staff, ...items] }));
+        toast(`已匯入 ${items.length} 位盤點人員 ✔`);
+      }
+    } catch (err) { toast("Excel 解析失敗，請確認檔案格式"); }
     e.target.value = "";
   };
 
@@ -708,10 +789,13 @@ function MaintainZone({ db, setDB, month, setMonth, toast }) {
 
   const inputCls = "px-3 py-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 outline-none";
   const importBtn = (kind, label) => (
-    <label className="px-4 py-2 bg-teal-600 hover:bg-teal-700 text-white text-sm rounded-lg cursor-pointer">
-      📥 {label}（Excel 匯入）
-      <input type="file" accept=".xlsx,.xls,.csv" className="hidden" onChange={importExcel(kind)} />
-    </label>
+    <>
+      <label className="px-4 py-2 bg-teal-600 hover:bg-teal-700 text-white text-sm rounded-lg cursor-pointer">
+        📥 {label}（Excel 匯入）
+        <input type="file" accept=".xlsx,.xls" className="hidden" onChange={importExcel(kind)} />
+      </label>
+      <button onClick={() => downloadTemplate(kind)} className="px-3 py-2 text-teal-700 hover:bg-teal-50 border border-teal-600 text-sm rounded-lg">⬇ 下載匯入範本</button>
+    </>
   );
 
   return (
@@ -853,6 +937,10 @@ function App() {
   const [toastMsg, setToastMsg] = useState("");
   const [showBell, setShowBell] = useState(false);
   const saveTimer = useRef();
+  const lastEditRef = useRef(0);      // 使用者最後編輯時間（避免自動刷新蓋掉未存的編輯）
+  const fromPollRef = useRef(false);  // 標記本次 db 變更來自自動刷新（不回寫後端）
+  const syncingRef = useRef(false);
+  const setSync = (v) => { syncingRef.current = v; setSyncing(v); };
 
   const user = sessionStorage.getItem("loginUser") || "demo-user";
 
@@ -881,12 +969,37 @@ function App() {
   // 維護類資料變更 → 防抖後同步（紀錄/上傳走 append，不在此重寫，避免多裝置互相覆蓋）
   useEffect(() => {
     if (!ready || !db) return;
+    if (fromPollRef.current) { fromPollRef.current = false; return; } // 自動刷新帶來的變更不回寫
+    lastEditRef.current = Date.now();
     clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(async () => {
-      setSyncing(true);
-      try { await InventoryAPI.saveTabs(db, ADMIN_TABS); } catch (e) { /* 同步失敗，下次變更再試 */ } finally { setSyncing(false); }
+      setSync(true);
+      try { await InventoryAPI.saveTabs(db, ADMIN_TABS); } catch (e) { /* 同步失敗，下次變更再試 */ } finally { setSync(false); }
     }, 600);
   }, [db, ready]);
+
+  // 即時更新：每 15 秒自動抓最新資料（近即時；使用者剛編輯或分頁隱藏時略過）
+  useEffect(() => {
+    if (!ready) return;
+    const id = setInterval(async () => {
+      if (document.hidden || syncingRef.current) return;
+      if (Date.now() - lastEditRef.current < 3000) return;
+      try {
+        const d = await InventoryAPI.loadDB();
+        if (d && d.brands) { fromPollRef.current = true; setDB(d); }
+      } catch (e) { /* 忽略單次刷新失敗 */ }
+    }, 15000);
+    return () => clearInterval(id);
+  }, [ready]);
+
+  // 手動重新整理
+  const refresh = async () => {
+    setSync(true);
+    try {
+      const d = await InventoryAPI.loadDB();
+      if (d && d.brands) { fromPollRef.current = true; setDB(d); toast("已更新為最新資料 ✔"); }
+    } catch (e) { toast("更新失敗，請確認網路"); } finally { setSync(false); }
+  };
 
   // 角色切換時，若目前頁籤無權限則跳回第一個可用頁籤
   useEffect(() => {
@@ -935,6 +1048,12 @@ function App() {
 
           <input type="month" value={month} onChange={(e) => setMonth(e.target.value)}
             className="px-2 py-1.5 rounded-lg text-sm text-slate-800 bg-white" title="盤點月份" />
+
+          {/* 手動重新整理 */}
+          <button onClick={refresh} disabled={syncing} title="重新整理（抓最新資料）"
+            className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 disabled:opacity-50 rounded-lg text-sm">
+            {syncing ? "⟳ 更新中" : "⟳ 重新整理"}
+          </button>
 
           {/* 預警通知 */}
           <div className="relative">
