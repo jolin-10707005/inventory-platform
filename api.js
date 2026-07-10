@@ -11,7 +11,7 @@
 
 const API_CONFIG = {
   // ↓↓↓ 部署 Google Apps Script Web App 後，把 /exec 結尾的網址貼在這裡，即啟用雲端共用模式 ↓↓↓
-  APPS_SCRIPT_URL: "",
+  APPS_SCRIPT_URL: "https://script.google.com/macros/s/AKfycbz7kHutmQWdXqEC_rW5fO7tVklFfEBvj0788yPan2nrIW29ccWsgoOvnWTqBEPqG5H5/exec",
   // ↑↑↑ 留空 = 本機 localStorage 模式（僅供單機開發測試）↑↑↑
 };
 
