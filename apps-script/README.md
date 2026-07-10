@@ -39,11 +39,11 @@ const API_CONFIG = {
 | `stores` | 店鋪名單 | id, brandId, month, code, name |
 | `staff` | 盤點人員名單 | id, brandId, month, empNo, name |
 | `prices` | 單價設定 | storeId, priceType(piece/hour), unitPrice |
-| `produced` | 已產製檔案狀態 | storeId, month, master, stock |
 | `records` | 盤點填寫紀錄 | id, brandId, storeId, month, date, startTime, endTime, headcount, pieces, special, photos, filledBy |
-| `uploads` | 客戶主檔上傳紀錄 | id, brandId, month, fileName, storeCount, uploadedAt |
+| `uploads` | 客戶主檔上傳紀錄 | id, brandId, month, type, fileName, storeCount, rowCount, uploadedAt |
+| `masters` | 依店鋪切分後的主檔／庫存檔 | storeId, month, type(master/stock), columns(JSON), rows(JSON) |
 
-> 每列一筆、第一列為欄位名稱。`photos` 欄位以 JSON 字串存放照片連結陣列。
+> 每列一筆、第一列為欄位名稱。所有分頁皆以「純文字格式」寫入，避免 Sheets 把 `2026-07`、`21:00` 自動轉成日期/時間。`photos`、`columns`、`rows` 欄位以 JSON 字串存放。
 
 ---
 
