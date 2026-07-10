@@ -13,6 +13,17 @@ var PHOTO_FOLDER_ID = "1h9qjSAx2-sojs5_uP307qmBUvw-XiDhn";
 
 var TABS = ["brands", "stores", "staff", "prices", "records", "uploads"];
 
+// 分頁顯示名稱（程式內部仍用英文代碼；工作表分頁改中文，方便人工檢視）
+var SHEET_NAMES = {
+  brands: "品牌",
+  stores: "店鋪",
+  staff: "盤點人員",
+  prices: "單價",
+  records: "盤點紀錄",
+  uploads: "上傳紀錄",
+  masters: "主檔索引"
+};
+
 function doGet(e) {
   var p = (e && e.parameter) || {};
   var action = p.action || "getAll";
@@ -221,9 +232,10 @@ function toLine(row, headers) {
 }
 
 function sheet(name) {
+  var real = SHEET_NAMES[name] || name; // 英文代碼 → 中文分頁名
   var ss = SpreadsheetApp.getActiveSpreadsheet();
-  var sh = ss.getSheetByName(name);
-  if (!sh) sh = ss.insertSheet(name);
+  var sh = ss.getSheetByName(real);
+  if (!sh) sh = ss.insertSheet(real);
   return sh;
 }
 
