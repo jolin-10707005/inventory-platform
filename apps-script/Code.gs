@@ -245,3 +245,33 @@ function sheet(name) {
 function jsonOut(obj) {
   return ContentService.createTextOutput(JSON.stringify(obj)).setMimeType(ContentService.MimeType.JSON);
 }
+
+/* ============================================================
+ * 一次性清理：刪除用不到的舊分頁
+ * 用法：在 Apps Script 編輯器上方函式清單選「cleanupOldSheets」→ 按 ▶ 執行（首次會要求授權）
+ * 會刪除：舊英文分頁、預設空白工作表，以及未被「主檔索引」引用的孤兒資料表(D_...)
+ * 會保留：中文分頁（品牌/店鋪/盤點人員/單價/盤點紀錄/上傳紀錄/主檔索引/店名對應）與使用中的主檔資料表
+ * ============================================================ */
+function cleanupOldSheets() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var removed = [];
+  // 1) 舊英文分頁 + 預設空白表
+  var oldNames = ["brands", "stores", "staff", "prices", "produced", "records", "uploads", "masters", "aliases", "工作表1", "Sheet1", "Sheet"];
+  oldNames.forEach(function (name) {
+    var sh = ss.getSheetByName(name);
+    if (sh) { try { ss.deleteSheet(sh); removed.push(name); } catch (e) {} }
+  });
+  // 2) 未被主檔索引引用的 D_ 孤兒資料表
+  var used = {};
+  var idx = ss.getSheetByName(SHEET_NAMES.masters); // 主檔索引
+  if (idx) {
+    var v = idx.getDataRange().getValues();
+    for (var i = 1; i < v.length; i++) { if (v[i][3]) used[v[i][3]] = true; }
+  }
+  ss.getSheets().forEach(function (sh) {
+    var nm = sh.getName();
+    if (nm.indexOf("D_") === 0 && !used[nm]) { try { ss.deleteSheet(sh); removed.push(nm); } catch (e) {} }
+  });
+  Logger.log("已刪除 " + removed.length + " 個分頁：" + removed.join(", "));
+  return removed;
+}
