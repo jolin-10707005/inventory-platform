@@ -44,19 +44,21 @@ const seedDB = {
     { brandId: "B02", priceType: "hour", unitPrice: 320, docFee: 500, otFee: 200 },
     { brandId: "B03", priceType: "piece", unitPrice: 0.6 },
   ],
-  // 填寫區作業紀錄
+  // 填寫區作業紀錄（範本 6 時間點：進店/存貨開始/存貨結束/找差異開始/找差異結束/離店）
   records: [
     {
       id: "R001", brandId: "B01", storeId: "S001", month: CURRENT_MONTH,
-      date: "2026-07-05", startTime: "21:00", endTime: "23:30",
-      headcount: 4, pieces: 12800, special: "冷凍櫃區域燈光不足，作業速度較慢",
-      photos: [], filledBy: "王小明（範例）",
+      date: "2026-07-05", headcount: 2, pieces: 688,
+      arriveTime: "7:50", countStart: "8:00", countEnd: "8:55",
+      diffStart: "9:00", diffEnd: "9:05", leaveTime: "9:15",
+      special: "", photos: [], filledBy: "王小明（範例）",
     },
     {
       id: "R002", brandId: "B02", storeId: "S004", month: CURRENT_MONTH,
-      date: "2026-07-06", startTime: "22:00", endTime: "01:00",
-      headcount: 3, pieces: 6400, special: "",
-      photos: [], filledBy: "張小美（範例）",
+      date: "2026-07-06", headcount: 3, pieces: 2841,
+      arriveTime: "7:55", countStart: "8:00", countEnd: "10:04",
+      diffStart: "10:10", diffEnd: "10:22", leaveTime: "10:45",
+      special: "", photos: [], filledBy: "張小美（範例）",
     },
   ],
   uploads: [], // 上傳區：客戶主檔上傳紀錄
@@ -124,6 +126,20 @@ function exportXLSX(filename, sheetName, aoa, opts) {
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, (sheetName || "工作表1").slice(0, 31));
   XLSX.writeFile(wb, filename);
+}
+
+// 由二維陣列建工作表；儲存格 {f:"公式", v:快取值} 寫成 Excel 公式（保留公式、開檔即顯示值、編輯可重算）
+function wsFromMatrix(matrix) {
+  const ws = {}; let maxC = 0;
+  matrix.forEach((row, r) => row.forEach((cell, c) => {
+    const a = XLSX.utils.encode_cell({ r, c });
+    if (cell && typeof cell === "object" && "f" in cell) ws[a] = { t: "n", f: cell.f, v: (cell.v == null ? 0 : cell.v) };
+    else if (typeof cell === "number") ws[a] = { t: "n", v: cell };
+    else ws[a] = { t: "s", v: cell == null ? "" : String(cell) };
+    if (c > maxC) maxC = c;
+  }));
+  ws["!ref"] = XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: Math.max(0, matrix.length - 1), c: maxC } });
+  return ws;
 }
 
 // 標準主檔／庫存檔輸出欄位（順序、名稱需與客戶範本一致；庫存數量為數量欄）
@@ -359,12 +375,10 @@ function DownloadZone({ db, month, setMonth, toast }) {
  * 2. 填寫區：作業時間 / 件數人數 / 特殊狀況 / 紙本報表照片
  * ============================================================ */
 function FillZone({ db, setDB, month, setMonth, user, toast }) {
-  const empty = { brandId: "", storeId: "", date: "", startTime: "", endTime: "", headcount: "", pieces: "", special: "", photos: [] };
+  const empty = { brandId: "", storeId: "", date: "", headcount: "", pieces: "", arriveTime: "", countStart: "", countEnd: "", diffStart: "", diffEnd: "", leaveTime: "", special: "", photos: [] };
   const [form, setForm] = useState(empty);
   const [errors, setErrors] = useState({});
   const set = (k, v) => setForm((f) => ({ ...f, [k]: v }));
-
-  const hours = calcHours(form.startTime, form.endTime);
 
   const onPhotos = (e) => {
     const files = Array.from(e.target.files).slice(0, 6);
@@ -381,15 +395,18 @@ function FillZone({ db, setDB, month, setMonth, user, toast }) {
     if (!form.brandId) err.brandId = "請選擇品牌";
     if (!form.storeId) err.storeId = "請選擇店鋪";
     if (!form.date) err.date = "請選擇盤點日期";
-    if (!form.startTime || !form.endTime) err.time = "請填寫作業開始與結束時間";
+    if (!form.countStart || !form.countEnd) err.count = "請填寫存貨開始與結束盤點時間";
     if (!form.headcount || Number(form.headcount) <= 0) err.headcount = "人數須大於 0";
     if (!form.pieces || Number(form.pieces) <= 0) err.pieces = "件數須大於 0";
     setErrors(err);
     return Object.keys(err).length === 0;
   };
 
-  // 儲存盤點紀錄：照片先上傳（雲端模式存 Drive、回傳連結）→ append 一筆紀錄
-  // TODO: 未來改接日翊資料庫時，對應 api.js 的 uploadPhoto / appendRow
+  // 存貨盤點耗時（時數）與人時、效率預覽
+  const countHrs = calcHours(form.countStart, form.countEnd);
+  const eff = (countHrs > 0 && Number(form.headcount) > 0 && Number(form.pieces) > 0)
+    ? Math.round(Number(form.pieces) / (countHrs * Number(form.headcount))) : 0;
+
   const [saving, setSaving] = useState(false);
   const submit = async () => {
     if (!validate()) { toast("尚有欄位未通過驗證，請檢查紅字提示"); return; }
@@ -403,8 +420,9 @@ function FillZone({ db, setDB, month, setMonth, user, toast }) {
       }
       const rec = {
         id: uid("R"), brandId: form.brandId, storeId: form.storeId, month,
-        date: form.date, startTime: form.startTime, endTime: form.endTime,
-        headcount: Number(form.headcount), pieces: Number(form.pieces),
+        date: form.date, headcount: Number(form.headcount), pieces: Number(form.pieces),
+        arriveTime: form.arriveTime, countStart: form.countStart, countEnd: form.countEnd,
+        diffStart: form.diffStart, diffEnd: form.diffEnd, leaveTime: form.leaveTime,
         special: form.special, photos, filledBy: user,
       };
       const next = { ...db, records: [...db.records, rec] };
@@ -426,7 +444,7 @@ function FillZone({ db, setDB, month, setMonth, user, toast }) {
     .map((r) => {
       const store = db.stores.find((s) => s.id === r.storeId);
       const brand = db.brands.find((b) => b.id === r.brandId);
-      return { ...r, brandName: brand ? brand.name : "", storeName: store ? store.name : "", dept: store ? store.dept : "", timeRange: `${r.startTime}–${r.endTime}`, piecesNum: num(r.pieces) };
+      return { ...r, brandName: brand ? brand.name : "", storeName: store ? store.name : "", storeCode: store ? store.code : "", dept: store ? store.dept : "", piecesNum: num(r.pieces) };
     });
   const myRecords = allRecords.filter((r) => matchFilters(r, filters));
 
@@ -455,31 +473,47 @@ function FillZone({ db, setDB, month, setMonth, user, toast }) {
               <Err k="date" />
             </div>
             <div>
-              <label className="text-sm text-slate-600">開始時間 *</label>
-              <input type="time" value={form.startTime} onChange={(e) => set("startTime", e.target.value)} className={inputCls} />
-            </div>
-            <div>
-              <label className="text-sm text-slate-600">結束時間 *（跨夜自動計算）</label>
-              <input type="time" value={form.endTime} onChange={(e) => set("endTime", e.target.value)} className={inputCls} />
-              <Err k="time" />
-            </div>
-          </div>
-
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            <div>
-              <label className="text-sm text-slate-600">作業人數 *</label>
-              <input type="number" min="1" value={form.headcount} onChange={(e) => set("headcount", e.target.value)} className={inputCls} placeholder="例：4" />
+              <label className="text-sm text-slate-600">盤點人數 *</label>
+              <input type="number" min="1" value={form.headcount} onChange={(e) => set("headcount", e.target.value)} className={inputCls} placeholder="例：2" />
               <Err k="headcount" />
             </div>
             <div>
-              <label className="text-sm text-slate-600">盤點件數 *</label>
-              <input type="number" min="1" value={form.pieces} onChange={(e) => set("pieces", e.target.value)} className={inputCls} placeholder="例：12800" />
+              <label className="text-sm text-slate-600">實盤件數 *</label>
+              <input type="number" min="1" value={form.pieces} onChange={(e) => set("pieces", e.target.value)} className={inputCls} placeholder="例：688" />
               <Err k="pieces" />
             </div>
+          </div>
+
+          <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
             <div>
-              <label className="text-sm text-slate-600">作業時數（自動計算）</label>
-              <div className="px-3 py-2 bg-slate-100 rounded-lg text-sm font-mono">{hours > 0 ? `${hours} 小時` : "—"}</div>
+              <label className="text-sm text-slate-600">進店時間</label>
+              <input type="time" value={form.arriveTime} onChange={(e) => set("arriveTime", e.target.value)} className={inputCls} />
             </div>
+            <div>
+              <label className="text-sm text-slate-600">存貨開始盤點 *</label>
+              <input type="time" value={form.countStart} onChange={(e) => set("countStart", e.target.value)} className={inputCls} />
+            </div>
+            <div>
+              <label className="text-sm text-slate-600">存貨結束盤點 *</label>
+              <input type="time" value={form.countEnd} onChange={(e) => set("countEnd", e.target.value)} className={inputCls} />
+              <Err k="count" />
+            </div>
+            <div>
+              <label className="text-sm text-slate-600">找差異開始</label>
+              <input type="time" value={form.diffStart} onChange={(e) => set("diffStart", e.target.value)} className={inputCls} />
+            </div>
+            <div>
+              <label className="text-sm text-slate-600">找差異結束</label>
+              <input type="time" value={form.diffEnd} onChange={(e) => set("diffEnd", e.target.value)} className={inputCls} />
+            </div>
+            <div>
+              <label className="text-sm text-slate-600">盤點人員離店</label>
+              <input type="time" value={form.leaveTime} onChange={(e) => set("leaveTime", e.target.value)} className={inputCls} />
+            </div>
+          </div>
+
+          <div className="bg-slate-50 border border-slate-200 rounded-lg px-4 py-2 text-sm text-slate-600">
+            存貨盤點耗時：<b>{countHrs > 0 ? `${countHrs} 小時` : "—"}</b>　｜　預估盤點效率：<b>{eff > 0 ? `${eff.toLocaleString()} 件/H/人` : "—"}</b>
           </div>
 
           <div>
@@ -512,23 +546,25 @@ function FillZone({ db, setDB, month, setMonth, user, toast }) {
         </div>
       </SectionCard>
 
-      <SectionCard title="🗂 本月盤點作業紀錄" subtitle={`${month} 共 ${myRecords.length} 筆（各欄可篩選）`}>
+      <SectionCard title="🗂 本月盤點作業紀錄" subtitle={`${month} 共 ${myRecords.length} 筆（各欄用選單篩選）`}>
         <div className="table-scroll">
-          <table className="w-full text-sm">
+          <table className="w-full text-sm whitespace-nowrap">
             <thead>
               <tr className="text-left text-slate-500 border-b">
-                <th className="py-2 pr-4">日期</th><th className="py-2 pr-4">品牌</th><th className="py-2 pr-4">店鋪</th>
-                <th className="py-2 pr-4">主責課</th><th className="py-2 pr-4">時間</th><th className="py-2 pr-4">人數</th><th className="py-2 pr-4">件數</th>
+                <th className="py-2 pr-4">日期</th><th className="py-2 pr-4">主責課</th><th className="py-2 pr-4">店號</th><th className="py-2 pr-4">店名</th>
+                <th className="py-2 pr-4">盤點人數</th><th className="py-2 pr-4">實盤件數</th>
+                <th className="py-2 pr-4">進店</th><th className="py-2 pr-4">存貨開始</th><th className="py-2 pr-4">存貨結束</th>
+                <th className="py-2 pr-4">找差異開始</th><th className="py-2 pr-4">找差異結束</th><th className="py-2 pr-4">離店</th>
                 <th className="py-2 pr-4">特殊狀況</th><th className="py-2 pr-4">填寫人</th>
               </tr>
               <tr className="border-b">
                 <th className="py-1 pr-4"><FilterSelect value={filters.date} onChange={(v) => setFilt("date", v)} options={distinctVals(allRecords, "date")} /></th>
-                <th className="py-1 pr-4"><FilterSelect value={filters.brandName} onChange={(v) => setFilt("brandName", v)} options={distinctVals(allRecords, "brandName")} /></th>
-                <th className="py-1 pr-4"><FilterSelect value={filters.storeName} onChange={(v) => setFilt("storeName", v)} options={distinctVals(allRecords, "storeName")} /></th>
                 <th className="py-1 pr-4"><FilterSelect value={filters.dept} onChange={(v) => setFilt("dept", v)} options={distinctVals(allRecords, "dept")} /></th>
-                <th className="py-1 pr-4"><FilterSelect value={filters.timeRange} onChange={(v) => setFilt("timeRange", v)} options={distinctVals(allRecords, "timeRange")} /></th>
+                <th className="py-1 pr-4"><FilterSelect value={filters.storeCode} onChange={(v) => setFilt("storeCode", v)} options={distinctVals(allRecords, "storeCode")} /></th>
+                <th className="py-1 pr-4"><FilterSelect value={filters.storeName} onChange={(v) => setFilt("storeName", v)} options={distinctVals(allRecords, "storeName")} /></th>
                 <th className="py-1 pr-4"><FilterSelect value={filters.headcount} onChange={(v) => setFilt("headcount", v)} options={distinctVals(allRecords, "headcount")} /></th>
                 <th className="py-1 pr-4"><FilterSelect value={filters.piecesNum} onChange={(v) => setFilt("piecesNum", v)} options={distinctVals(allRecords, "piecesNum")} /></th>
+                <th colSpan="6"></th>
                 <th className="py-1 pr-4"><FilterSelect value={filters.special} onChange={(v) => setFilt("special", v)} options={distinctVals(allRecords, "special")} /></th>
                 <th className="py-1 pr-4"><FilterSelect value={filters.filledBy} onChange={(v) => setFilt("filledBy", v)} options={distinctVals(allRecords, "filledBy")} /></th>
               </tr>
@@ -537,17 +573,22 @@ function FillZone({ db, setDB, month, setMonth, user, toast }) {
               {myRecords.map((r) => (
                 <tr key={r.id} className="border-b last:border-0">
                   <td className="py-2 pr-4">{r.date}</td>
-                  <td className="py-2 pr-4">{r.brandName}</td>
-                  <td className="py-2 pr-4">{r.storeName}</td>
                   <td className="py-2 pr-4">{r.dept || "—"}</td>
-                  <td className="py-2 pr-4 font-mono">{r.timeRange}</td>
+                  <td className="py-2 pr-4 font-mono">{r.storeCode}</td>
+                  <td className="py-2 pr-4">{r.storeName}</td>
                   <td className="py-2 pr-4">{r.headcount}</td>
                   <td className="py-2 pr-4">{r.piecesNum.toLocaleString()}</td>
+                  <td className="py-2 pr-4 font-mono">{r.arriveTime || "—"}</td>
+                  <td className="py-2 pr-4 font-mono">{r.countStart || "—"}</td>
+                  <td className="py-2 pr-4 font-mono">{r.countEnd || "—"}</td>
+                  <td className="py-2 pr-4 font-mono">{r.diffStart || "—"}</td>
+                  <td className="py-2 pr-4 font-mono">{r.diffEnd || "—"}</td>
+                  <td className="py-2 pr-4 font-mono">{r.leaveTime || "—"}</td>
                   <td className="py-2 pr-4 max-w-[200px] truncate" title={r.special}>{r.special || "—"}</td>
                   <td className="py-2 pr-4">{r.filledBy}</td>
                 </tr>
               ))}
-              {myRecords.length === 0 && <tr><td colSpan="9" className="py-6 text-center text-slate-400">查無符合條件的紀錄</td></tr>}
+              {myRecords.length === 0 && <tr><td colSpan="14" className="py-6 text-center text-slate-400">查無符合條件的紀錄</td></tr>}
             </tbody>
           </table>
         </div>
@@ -910,9 +951,11 @@ function AnalysisZone({ db, month, setMonth, toast }) {
         const pieces = num(r.pieces);          // 後端可能回字串，統一轉數字
         const headcount = num(r.headcount);
         const unitPrice = price ? num(price.unitPrice) : 0;
-        const hoursVal = calcHours(r.startTime, r.endTime);
-        const manHours = Math.round(hoursVal * headcount * 100) / 100;
-        const efficiency = manHours > 0 ? Math.round(pieces / manHours) : 0;
+        const countHrs = calcHours(r.countStart, r.countEnd);      // 存貨盤點時數
+        const countMin = Math.round(countHrs * 60);
+        const manHours = Math.round(countHrs * headcount * 100) / 100; // 人時
+        const diffHrs = Math.round(calcHours(r.diffStart, r.diffEnd) * 10) / 10; // 找差異時數
+        const efficiency = (countHrs > 0 && headcount > 0) ? Math.round(pieces / (countHrs * headcount)) : 0; // 件/H/人
         let base = 0, priceDesc = "未設定單價";
         if (price) {
           if (price.priceType === "piece") { base = Math.round(pieces * unitPrice); priceDesc = `${unitPrice} 元/件`; }
@@ -921,7 +964,7 @@ function AnalysisZone({ db, month, setMonth, toast }) {
         const docFee = price ? num(price.docFee) : 0;   // 英斯伯：每場文件處理費
         const otFee = price ? num(price.otFee) : 0;     // 英斯伯：每場超時費
         const amount = base + docFee + otFee;
-        return { ...r, pieces, headcount, storeName: store?.name || r.storeId, dept: store?.dept || "", brandName: brand?.name, hoursVal, manHours, efficiency, base, docFee, otFee, amount, priceDesc };
+        return { ...r, pieces, headcount, storeName: store?.name || r.storeId, storeCode: store?.code || "", dept: store?.dept || "", brandName: brand?.name, countHrs, countMin, manHours, diffHrs, efficiency, base, docFee, otFee, amount, priceDesc };
       });
   }, [db, month, brandId]);
 
@@ -930,27 +973,46 @@ function AnalysisZone({ db, month, setMonth, toast }) {
     pieces: a.pieces + r.pieces, manHours: a.manHours + r.manHours, base: a.base + r.base, docFee: a.docFee + r.docFee, otFee: a.otFee + r.otFee, amount: a.amount + r.amount,
   }), { pieces: 0, manHours: 0, base: 0, docFee: 0, otFee: 0, amount: 0 });
 
-  // 匯出請款資料
+  // 匯出請款資料（件數×單價；英斯伯另加文件處理費/超時費）
   const exportBilling = () => {
     if (viewRows.length === 0) { toast("目前沒有可匯出的資料"); return; }
     exportXLSX(`請款資料_${month}.xlsx`, `請款資料_${month}`, [
-      ["品牌", "店鋪", "主責課", "盤點日期", "件數", "人數", "時數", "人時", "計價方式", "作業費", "文件處理費", "超時費", "請款金額"],
-      ...viewRows.map((r) => [r.brandName, r.storeName, r.dept, r.date, r.pieces, r.headcount, r.hoursVal, r.manHours, r.priceDesc, r.base, r.docFee, r.otFee, r.amount]),
-      ["合計", "", "", "", totals.pieces, "", "", totals.manHours, "", totals.base, totals.docFee, totals.otFee, totals.amount],
+      ["品牌", "店鋪", "主責課", "盤點日期", "實盤件數", "盤點人數", "計價方式", "作業費", "文件處理費", "超時費", "請款金額"],
+      ...viewRows.map((r) => [r.brandName, r.storeName, r.dept, r.date, r.pieces, r.headcount, r.priceDesc, r.base, r.docFee, r.otFee, r.amount]),
+      ["合計", "", "", "", totals.pieces, "", "", totals.base, totals.docFee, totals.otFee, totals.amount],
     ]);
     toast("請款資料 Excel 已匯出 ✔");
   };
 
-  // 匯出作業分析（偏重效率/工時，不含金額）
+  // 匯出作業分析（多分頁、比照範本、保留 Excel 公式，可自行調整重算）
   const exportOps = () => {
     if (viewRows.length === 0) { toast("目前沒有可匯出的資料"); return; }
-    const avgEff = totals.manHours > 0 ? Math.round(totals.pieces / totals.manHours) : 0;
-    exportXLSX(`作業分析_${month}.xlsx`, `作業分析_${month}`, [
-      ["品牌", "店鋪", "主責課", "盤點日期", "開始", "結束", "作業時數", "人數", "人時", "盤點件數", "人時效率(件/人時)", "特殊狀況"],
-      ...viewRows.map((r) => [r.brandName, r.storeName, r.dept, r.date, r.startTime, r.endTime, r.hoursVal, r.headcount, r.manHours, r.pieces, r.efficiency, r.special || ""]),
-      ["合計/平均", "", "", "", "", "", "", "", totals.manHours, totals.pieces, avgEff, ""],
-    ]);
-    toast("作業分析 Excel 已匯出 ✔");
+    const wb = XLSX.utils.book_new();
+    // 分頁一：各店概要
+    const gH = ["日期", "主責課", "店號", "店名", "盤點人數", "實盤件數", "進店時間", "存貨開始盤點時間", "存貨結束盤點時間", "找差異開始時間", "找差異結束時間", "找差異時間(H)", "盤點人員離店", "盤點效率(件/H/人)", "特殊狀況說明"];
+    const gM = [gH];
+    viewRows.forEach((r, i) => {
+      const R = i + 2;
+      gM.push([r.date, r.dept, r.storeCode, r.storeName, r.headcount, r.pieces, r.arriveTime, r.countStart, r.countEnd, r.diffStart, r.diffEnd,
+        { f: `IF(OR(J${R}="",K${R}=""),"",ROUND((TIMEVALUE(K${R})-TIMEVALUE(J${R}))*24,1))`, v: r.diffHrs },
+        r.leaveTime,
+        { f: `IF(OR(H${R}="",I${R}="",E${R}=0),"",ROUND(F${R}/((TIMEVALUE(I${R})-TIMEVALUE(H${R}))*24*E${R}),0))`, v: r.efficiency },
+        r.special || ""]);
+    });
+    XLSX.utils.book_append_sheet(wb, wsFromMatrix(gM), "各店概要");
+    // 分頁二：盤點效率
+    const eH = ["日期", "主責課", "店號", "店名", "盤點人數", "實盤件數", "盤點開始時間", "盤點結束時間", "單店耗時(分)", "單店耗時(H)", "盤點效率(件/H/人)"];
+    const eM = [eH];
+    viewRows.forEach((r, i) => {
+      const R = i + 2;
+      eM.push([r.date, r.dept, r.storeCode, r.storeName, r.headcount, r.pieces, r.countStart, r.countEnd,
+        { f: `IF(OR(G${R}="",H${R}=""),"",ROUND((TIMEVALUE(H${R})-TIMEVALUE(G${R}))*1440,0))`, v: r.countMin },
+        { f: `IF(I${R}="","",ROUND(I${R}*E${R}/60,2))`, v: r.manHours },
+        { f: `IF(OR(J${R}="",J${R}=0),"",ROUND(F${R}/J${R},0))`, v: r.efficiency }]);
+    });
+    XLSX.utils.book_append_sheet(wb, wsFromMatrix(eM), "盤點效率");
+    XLSX.writeFile(wb, `歐聖作業分析-${month}.xlsx`);
+    toast("作業分析 Excel 已匯出（含公式）✔");
   };
 
   const Stat = ({ label, value, unit }) => (
@@ -991,7 +1053,7 @@ function AnalysisZone({ db, month, setMonth, toast }) {
             <tr className="text-left text-slate-500 border-b">
               <th className="py-2 pr-4">品牌</th><th className="py-2 pr-4">店鋪</th><th className="py-2 pr-4">主責課</th><th className="py-2 pr-4">日期</th>
               <th className="py-2 pr-4 text-right">件數</th><th className="py-2 pr-4 text-right">人數</th>
-              <th className="py-2 pr-4 text-right">人時</th><th className="py-2 pr-4 text-right">人時效率</th>
+              <th className="py-2 pr-4 text-right">人時</th><th className="py-2 pr-4 text-right">盤點效率</th>
               <th className="py-2 pr-4">計價方式</th><th className="py-2 pr-4 text-right">請款金額</th>
             </tr>
             <tr className="border-b">
@@ -1012,7 +1074,7 @@ function AnalysisZone({ db, month, setMonth, toast }) {
                 <td className="py-2 pr-4 text-right">{r.pieces.toLocaleString()}</td>
                 <td className="py-2 pr-4 text-right">{r.headcount}</td>
                 <td className="py-2 pr-4 text-right">{r.manHours}</td>
-                <td className="py-2 pr-4 text-right">{r.efficiency.toLocaleString()} 件/人時</td>
+                <td className="py-2 pr-4 text-right">{r.efficiency.toLocaleString()} 件/H/人</td>
                 <td className="py-2 pr-4">{r.priceDesc}</td>
                 <td className="py-2 pr-4 text-right font-semibold">{r.amount.toLocaleString()} 元</td>
               </tr>
