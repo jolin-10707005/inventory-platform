@@ -50,11 +50,18 @@ const InventoryAPI = {
     return m ? { columns: m.columns, rows: m.rows } : null;
   },
 
-  /** 寫入/覆蓋單一店鋪主檔 rec = { storeId, month, type, columns, rows } */
+  /** 寫入/覆蓋單一店鋪主檔 rec = { storeId, month, type, srcDate, srcFile, columns, rows } */
   async putMaster(rec) {
     if (this.cloud()) { await this._post({ action: "putMaster", rec }); return; }
     const list = this._localMasters().filter((x) => !(x.storeId === rec.storeId && x.month === rec.month && x.type === rec.type));
     list.push(rec);
+    localStorage.setItem(_MASTERS_KEY, JSON.stringify(list));
+  },
+
+  /** 依來源檔名刪除主檔（同檔名重新上傳前先清空） */
+  async deleteMastersByFile(srcFile, month) {
+    if (this.cloud()) { await this._post({ action: "deleteMastersByFile", srcFile, month }); return; }
+    const list = this._localMasters().filter((m) => !(m.srcFile === srcFile && m.month === month));
     localStorage.setItem(_MASTERS_KEY, JSON.stringify(list));
   },
 

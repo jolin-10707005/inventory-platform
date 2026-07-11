@@ -47,6 +47,8 @@ function doPost(e) {
     case "putMaster":
       putMaster(body.rec);
       return jsonOut({ ok: true });
+    case "deleteMastersByFile":
+      return jsonOut({ ok: true, removed: deleteMastersByFile(body.srcFile, body.month) });
     default:
       return jsonOut({ error: "unknown action: " + body.action });
   }
@@ -135,7 +137,7 @@ function uploadPhoto(dataUrl, filename) {
  * 資料工作表：第一列為欄位名稱，其後每列一筆。全部純文字格式。
  * 這樣可容納數萬列，不受單一儲存格 5 萬字元限制。
  */
-var MASTER_INDEX_HEADERS = ["storeId", "month", "type", "sheet", "srcDate"];
+var MASTER_INDEX_HEADERS = ["storeId", "month", "type", "sheet", "srcDate", "srcFile"];
 
 function masterIndexSheet() {
   var sh = sheet("masters");
@@ -153,7 +155,7 @@ function mastersIndex() {
   var out = [];
   for (var i = 1; i < v.length; i++) {
     if (String(v[i][0]) === "") continue;
-    out.push({ storeId: v[i][0], month: v[i][1], type: v[i][2], srcDate: v[i][4] || "" });
+    out.push({ storeId: v[i][0], month: v[i][1], type: v[i][2], srcDate: v[i][4] || "", srcFile: v[i][5] || "" });
   }
   return out;
 }
@@ -205,12 +207,34 @@ function putMaster(rec) {
   var v = sh.getDataRange().getValues();
   for (var i = 1; i < v.length; i++) {
     if (String(v[i][0]) === String(rec.storeId) && String(v[i][1]) === String(rec.month) && String(v[i][2]) === String(rec.type)) {
-      var rgU = sh.getRange(i + 1, 4, 1, 2); rgU.setNumberFormat("@"); rgU.setValues([[name, rec.srcDate || ""]]); return;
+      var rgU = sh.getRange(i + 1, 4, 1, 3); rgU.setNumberFormat("@"); rgU.setValues([[name, rec.srcDate || "", rec.srcFile || ""]]); return;
     }
   }
   var ri = sh.getLastRow() + 1;
   var rg2 = sh.getRange(ri, 1, 1, MASTER_INDEX_HEADERS.length);
-  rg2.setNumberFormat("@"); rg2.setValues([[rec.storeId, rec.month, rec.type, name, rec.srcDate || ""]]);
+  rg2.setNumberFormat("@"); rg2.setValues([[rec.storeId, rec.month, rec.type, name, rec.srcDate || "", rec.srcFile || ""]]);
+}
+
+// 依來源檔名刪除主檔（同檔名重新上傳前先清空舊產出）
+function deleteMastersByFile(srcFile, month) {
+  var sh = masterIndexSheet();
+  var v = sh.getDataRange().getValues();
+  if (v.length < 2) return 0;
+  var header = v[0];
+  var keep = [header]; var removed = 0;
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  for (var i = 1; i < v.length; i++) {
+    var row = v[i];
+    if (String(row[0]) === "") continue;
+    if (String(row[5]) === String(srcFile) && String(row[1]) === String(month)) {
+      var ds = ss.getSheetByName(row[3]); if (ds) { try { ss.deleteSheet(ds); } catch (e) {} }
+      removed++;
+    } else { keep.push(row); }
+  }
+  sh.clear();
+  var rg = sh.getRange(1, 1, keep.length, header.length);
+  rg.setNumberFormat("@"); rg.setValues(keep);
+  return removed;
 }
 
 function safeParse(v, dft) {

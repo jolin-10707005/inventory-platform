@@ -248,7 +248,7 @@ function BrandStoreSelect({ db, brandId, storeId, month, onBrand, onStore, showS
 /* ============================================================
  * 1. 主檔下載：各店盤點主檔 / 庫存檔 / 盤點手冊
  * ============================================================ */
-function DownloadZone({ db, month, toast }) {
+function DownloadZone({ db, month, setMonth, toast }) {
   const [brandId, setBrandId] = useState("");
   const [busy, setBusy] = useState("");
   const [filters, setFilters] = useState({});
@@ -293,7 +293,11 @@ function DownloadZone({ db, month, toast }) {
 
   return (
     <SectionCard title="📥 主檔下載" subtitle="下載各盤點店鋪的盤點主檔、庫存檔（Excel）及盤點手冊；各欄用選單篩選">
-      <BrandStoreSelect db={db} brandId={brandId} month={month} onBrand={setBrandId} showStore={false} />
+      <div className="flex flex-wrap gap-3 items-center">
+        <BrandStoreSelect db={db} brandId={brandId} month={month} onBrand={setBrandId} showStore={false} />
+        <input type="month" value={month} onChange={(e) => setMonth(e.target.value)} title="盤點月份"
+          className="px-3 py-2 border border-slate-300 rounded-lg text-sm bg-white focus:ring-2 focus:ring-blue-500 outline-none" />
+      </div>
 
       {brand && (
         <div className="mt-4 flex items-center gap-3 bg-blue-50 border border-blue-200 rounded-xl px-4 py-3">
@@ -354,7 +358,7 @@ function DownloadZone({ db, month, toast }) {
 /* ============================================================
  * 2. 填寫區：作業時間 / 件數人數 / 特殊狀況 / 紙本報表照片
  * ============================================================ */
-function FillZone({ db, setDB, month, user, toast }) {
+function FillZone({ db, setDB, month, setMonth, user, toast }) {
   const empty = { brandId: "", storeId: "", date: "", startTime: "", endTime: "", headcount: "", pieces: "", special: "", photos: [] };
   const [form, setForm] = useState(empty);
   const [errors, setErrors] = useState({});
@@ -417,14 +421,14 @@ function FillZone({ db, setDB, month, user, toast }) {
 
   const [filters, setFilters] = useState({});
   const setFilt = (k, v) => setFilters((p) => ({ ...p, [k]: v }));
-  const myRecords = db.records
+  const allRecords = db.records
     .filter((r) => r.month === month)
     .map((r) => {
       const store = db.stores.find((s) => s.id === r.storeId);
       const brand = db.brands.find((b) => b.id === r.brandId);
       return { ...r, brandName: brand ? brand.name : "", storeName: store ? store.name : "", dept: store ? store.dept : "", timeRange: `${r.startTime}–${r.endTime}`, piecesNum: num(r.pieces) };
-    })
-    .filter((r) => matchFilters(r, filters));
+    });
+  const myRecords = allRecords.filter((r) => matchFilters(r, filters));
 
   const Err = ({ k }) => errors[k] ? <p className="text-xs text-red-600 mt-1">{errors[k]}</p> : null;
   const inputCls = "w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 outline-none";
@@ -434,9 +438,13 @@ function FillZone({ db, setDB, month, user, toast }) {
       <SectionCard title="📝 盤點作業情況紀錄" subtitle="記錄盤點作業時間、件數人數、特殊狀況及紙本報表照片">
         <div className="space-y-4">
           <div>
-            <BrandStoreSelect db={db} brandId={form.brandId} storeId={form.storeId} month={month}
-              onBrand={(v) => setForm((f) => ({ ...f, brandId: v, storeId: "" }))}
-              onStore={(v) => set("storeId", v)} />
+            <div className="flex flex-wrap gap-3 items-center">
+              <BrandStoreSelect db={db} brandId={form.brandId} storeId={form.storeId} month={month}
+                onBrand={(v) => setForm((f) => ({ ...f, brandId: v, storeId: "" }))}
+                onStore={(v) => set("storeId", v)} />
+              <input type="month" value={month} onChange={(e) => setMonth(e.target.value)} title="盤點月份"
+                className="px-3 py-2 border border-slate-300 rounded-lg text-sm bg-white focus:ring-2 focus:ring-blue-500 outline-none" />
+            </div>
             <Err k="brandId" /><Err k="storeId" />
           </div>
 
@@ -514,15 +522,15 @@ function FillZone({ db, setDB, month, user, toast }) {
                 <th className="py-2 pr-4">特殊狀況</th><th className="py-2 pr-4">填寫人</th>
               </tr>
               <tr className="border-b">
-                <th className="py-1 pr-4"><FilterInput value={filters.date} onChange={(v) => setFilt("date", v)} /></th>
-                <th className="py-1 pr-4"><FilterInput value={filters.brandName} onChange={(v) => setFilt("brandName", v)} /></th>
-                <th className="py-1 pr-4"><FilterInput value={filters.storeName} onChange={(v) => setFilt("storeName", v)} /></th>
-                <th className="py-1 pr-4"><FilterInput value={filters.dept} onChange={(v) => setFilt("dept", v)} /></th>
-                <th className="py-1 pr-4"><FilterInput value={filters.timeRange} onChange={(v) => setFilt("timeRange", v)} /></th>
-                <th className="py-1 pr-4"><FilterInput value={filters.headcount} onChange={(v) => setFilt("headcount", v)} /></th>
-                <th className="py-1 pr-4"><FilterInput value={filters.piecesNum} onChange={(v) => setFilt("piecesNum", v)} /></th>
-                <th className="py-1 pr-4"><FilterInput value={filters.special} onChange={(v) => setFilt("special", v)} /></th>
-                <th className="py-1 pr-4"><FilterInput value={filters.filledBy} onChange={(v) => setFilt("filledBy", v)} /></th>
+                <th className="py-1 pr-4"><FilterSelect value={filters.date} onChange={(v) => setFilt("date", v)} options={distinctVals(allRecords, "date")} /></th>
+                <th className="py-1 pr-4"><FilterSelect value={filters.brandName} onChange={(v) => setFilt("brandName", v)} options={distinctVals(allRecords, "brandName")} /></th>
+                <th className="py-1 pr-4"><FilterSelect value={filters.storeName} onChange={(v) => setFilt("storeName", v)} options={distinctVals(allRecords, "storeName")} /></th>
+                <th className="py-1 pr-4"><FilterSelect value={filters.dept} onChange={(v) => setFilt("dept", v)} options={distinctVals(allRecords, "dept")} /></th>
+                <th className="py-1 pr-4"><FilterSelect value={filters.timeRange} onChange={(v) => setFilt("timeRange", v)} options={distinctVals(allRecords, "timeRange")} /></th>
+                <th className="py-1 pr-4"><FilterSelect value={filters.headcount} onChange={(v) => setFilt("headcount", v)} options={distinctVals(allRecords, "headcount")} /></th>
+                <th className="py-1 pr-4"><FilterSelect value={filters.piecesNum} onChange={(v) => setFilt("piecesNum", v)} options={distinctVals(allRecords, "piecesNum")} /></th>
+                <th className="py-1 pr-4"><FilterSelect value={filters.special} onChange={(v) => setFilt("special", v)} options={distinctVals(allRecords, "special")} /></th>
+                <th className="py-1 pr-4"><FilterSelect value={filters.filledBy} onChange={(v) => setFilt("filledBy", v)} options={distinctVals(allRecords, "filledBy")} /></th>
               </tr>
             </thead>
             <tbody>
@@ -620,13 +628,16 @@ function UploadZone({ db, setDB, month, toast, brandId }) {
   };
 
   // 寫入上傳紀錄與索引、記憶店名對應、提示、清空
+  // 同檔名重新上傳：先移除同檔名的舊上傳紀錄（主檔資料已於 produce 前用 deleteMastersByFile 清除）
   const finalize = async (addedIdx, matched, unmatched, label, newAliases) => {
     const uploadRec = { id: uid("U"), brandId, month, type: fileType, fileName: file.name, storeCount: matched, rowCount: parsed.rows.length, uploadedAt: new Date().toISOString().slice(0, 10) };
-    const idx = (db.mastersIndex || []).filter((m) => !addedIdx.some((a) => a.storeId === m.storeId && a.month === m.month && a.type === m.type));
+    const idx = (db.mastersIndex || []).filter((m) => !addedIdx.some((a) => a.storeId === m.storeId && a.month === m.month && a.type === m.type)
+      && !(m.srcFile === file.name && m.month === month)); // 同檔名舊索引一併移除
+    const uploads = [...db.uploads.filter((u) => !(u.fileName === file.name && u.month === month && u.brandId === brandId)), uploadRec];
     const mergedAliases = [...(db.aliases || []), ...(newAliases || [])];
-    const next = { ...db, uploads: [...db.uploads, uploadRec], mastersIndex: [...idx, ...addedIdx], aliases: mergedAliases };
-    setDB(next); // aliases 屬 ADMIN_TABS，會自動同步
-    await InventoryAPI.appendRow(next, "uploads", uploadRec);
+    const next = { ...db, uploads, mastersIndex: [...idx, ...addedIdx], aliases: mergedAliases };
+    setDB(next);
+    await InventoryAPI.saveTabs(next, ["uploads"]); // 整批覆蓋上傳紀錄（含清除同檔名舊紀錄）
     let msg = `已產製 ${matched} 個${label}（來源 ${parsed.rows.length} 筆）✔`;
     if (unmatched.length) msg += `；${unmatched.length} 個未對應（例：${unmatched.slice(0, 2).join("、")}）`;
     if (newAliases && newAliases.length) msg += `；已記住 ${newAliases.length} 筆店名對應`;
@@ -661,8 +672,9 @@ function UploadZone({ db, setDB, month, toast, brandId }) {
     }
     if (datasets.length === 0) { toast("沒有可對應的店鋪，請確認切分欄與名單"); return; }
     const srcDate = parseDateFromName(file.name);
+    await InventoryAPI.deleteMastersByFile(file.name, month); // 同檔名先清空舊產出
     const addedIdx = [];
-    for (const d of datasets) { await InventoryAPI.putMaster({ storeId: d.storeId, month, type: fileType, srcDate, columns: MASTER_COLS, rows: d.rows }); addedIdx.push({ storeId: d.storeId, month, type: fileType }); }
+    for (const d of datasets) { await InventoryAPI.putMaster({ storeId: d.storeId, month, type: fileType, srcDate, srcFile: file.name, columns: MASTER_COLS, rows: d.rows }); addedIdx.push({ storeId: d.storeId, month, type: fileType }); }
     await finalize(addedIdx, datasets.length, unmatched, label);
   };
 
@@ -697,8 +709,9 @@ function UploadZone({ db, setDB, month, toast, brandId }) {
       storeCols.forEach((h) => { const s = chosen(h); if (s && s.category) cats.add(s.category); });
       if (cats.size === 0) { toast("找不到店鋪種類：請在下方為店名欄選擇對應店鋪，或先於維護區維護名單（店鋪種類）"); return; }
       const srcDate = parseDateFromName(file.name);
+      await InventoryAPI.deleteMastersByFile(file.name, month); // 同檔名先清空舊產出
       const addedIdx = [];
-      for (const cat of cats) { await InventoryAPI.putMaster({ storeId: "CAT::" + cat, month, type: "master", srcDate, columns: MASTER_COLS, rows }); addedIdx.push({ storeId: "CAT::" + cat, month, type: "master" }); }
+      for (const cat of cats) { await InventoryAPI.putMaster({ storeId: "CAT::" + cat, month, type: "master", srcDate, srcFile: file.name, columns: MASTER_COLS, rows }); addedIdx.push({ storeId: "CAT::" + cat, month, type: "master" }); }
       await finalize(addedIdx, cats.size, [], `主檔（種類：${Array.from(cats).join("、")}）`, learnAliases());
     } else {
       // 庫存檔：每個店名/倉別欄各一份，數量帶該欄（先驗證整數）
@@ -713,13 +726,14 @@ function UploadZone({ db, setDB, month, toast, brandId }) {
         }
       }
       const srcDate = parseDateFromName(file.name);
+      await InventoryAPI.deleteMastersByFile(file.name, month); // 同檔名先清空舊產出
       const addedIdx = []; let matched = 0; const unmatched = [];
       for (const h of storeCols) {
         const store = chosen(h);
         if (!store) { unmatched.push(h); continue; }
         const rows = parsed.rows.map((src) => mapRow(src, String(src[h] == null || src[h] === "" ? "0" : src[h]).trim()));
         if (firstDup(rows.map((r) => r[CODE_COL]))) { toast("主檔商品編號重複"); return; }
-        await InventoryAPI.putMaster({ storeId: store.id, month, type: "stock", srcDate, columns: MASTER_COLS, rows });
+        await InventoryAPI.putMaster({ storeId: store.id, month, type: "stock", srcDate, srcFile: file.name, columns: MASTER_COLS, rows });
         addedIdx.push({ storeId: store.id, month, type: "stock" }); matched++;
       }
       if (matched === 0) { toast("尚未對應任何店鋪，請在下方為店名欄選擇對應店鋪"); return; }
@@ -881,7 +895,7 @@ function UploadZone({ db, setDB, month, toast, brandId }) {
  *    [COMPUTED] 請款金額 = 依單價設定：
  *               依件數：件數 × 單價；依人時：時數 × 人數 × 單價
  * ============================================================ */
-function AnalysisZone({ db, month, toast }) {
+function AnalysisZone({ db, month, setMonth, toast }) {
   const [brandId, setBrandId] = useState("");
   const [filters, setFilters] = useState({});
   const setF = (k, v) => setFilters((p) => ({ ...p, [k]: v }));
@@ -949,7 +963,11 @@ function AnalysisZone({ db, month, toast }) {
   return (
     <SectionCard title="📊 數據分析" subtitle="依盤點作業紀錄自動產出作業效率分析與請款資料；各欄可篩選">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <BrandStoreSelect db={db} brandId={brandId} month={month} onBrand={setBrandId} showStore={false} />
+        <div className="flex flex-wrap gap-3 items-center">
+          <BrandStoreSelect db={db} brandId={brandId} month={month} onBrand={setBrandId} showStore={false} />
+          <input type="month" value={month} onChange={(e) => setMonth(e.target.value)} title="盤點月份"
+            className="px-3 py-2 border border-slate-300 rounded-lg text-sm bg-white focus:ring-2 focus:ring-blue-500 outline-none" />
+        </div>
         <div className="flex gap-2">
           <button onClick={exportOps} className="px-5 py-2 bg-sky-600 hover:bg-sky-700 text-white text-sm font-medium rounded-lg">
             ⬇ 匯出作業分析（Excel）
@@ -977,10 +995,10 @@ function AnalysisZone({ db, month, toast }) {
               <th className="py-2 pr-4">計價方式</th><th className="py-2 pr-4 text-right">請款金額</th>
             </tr>
             <tr className="border-b">
-              <th className="py-1 pr-4"><FilterInput value={filters.brandName} onChange={(v) => setF("brandName", v)} /></th>
-              <th className="py-1 pr-4"><FilterInput value={filters.storeName} onChange={(v) => setF("storeName", v)} /></th>
-              <th className="py-1 pr-4"><FilterInput value={filters.dept} onChange={(v) => setF("dept", v)} /></th>
-              <th className="py-1 pr-4"><FilterInput value={filters.date} onChange={(v) => setF("date", v)} /></th>
+              <th className="py-1 pr-4"><FilterSelect value={filters.brandName} onChange={(v) => setF("brandName", v)} options={distinctVals(rows, "brandName")} /></th>
+              <th className="py-1 pr-4"><FilterSelect value={filters.storeName} onChange={(v) => setF("storeName", v)} options={distinctVals(rows, "storeName")} /></th>
+              <th className="py-1 pr-4"><FilterSelect value={filters.dept} onChange={(v) => setF("dept", v)} options={distinctVals(rows, "dept")} /></th>
+              <th className="py-1 pr-4"><FilterSelect value={filters.date} onChange={(v) => setF("date", v)} options={distinctVals(rows, "date")} /></th>
               <th colSpan="6"></th>
             </tr>
           </thead>
@@ -1022,8 +1040,10 @@ function MaintainZone({ db, setDB, month, setMonth, toast }) {
   const setSF = (k, v) => setSFilters((p) => ({ ...p, [k]: v }));
   const setPF = (k, v) => setPFilters((p) => ({ ...p, [k]: v }));
 
-  const stores = db.stores.filter((s) => s.brandId === brandId && s.month === month).filter((s) => matchFilters(s, sFilters));
-  const staff = db.staff.filter((p) => p.brandId === brandId && p.month === month).filter((p) => matchFilters(p, pFilters));
+  const baseStores = db.stores.filter((s) => s.brandId === brandId && s.month === month);
+  const baseStaff = db.staff.filter((p) => p.brandId === brandId && p.month === month);
+  const stores = baseStores.filter((s) => matchFilters(s, sFilters));
+  const staff = baseStaff.filter((p) => matchFilters(p, pFilters));
 
   // TODO: IT 工程師請在此串接後端 API 邏輯（POST /api/brands）
   const addBrand = () => {
@@ -1083,10 +1103,12 @@ function MaintainZone({ db, setDB, month, setMonth, toast }) {
         const get = (r, h) => h ? String(r[h] == null ? "" : r[h]).trim() : "";
         const items = rows.map((r) => ({ code: get(r, hCode), name: get(r, hName), dept: get(r, hDept), category: get(r, hCat), enName: get(r, hEn), warehouse: get(r, hWh), auditDate: get(r, hAudit) }))
           .filter((x) => x.code || x.name)
-          .map((x) => ({ id: uid("S"), brandId, month, code: x.code || x.name, name: x.name || x.code, dept: x.dept, category: x.category, enName: x.enName, warehouse: x.warehouse, auditDate: x.auditDate }));
+          .map((x) => ({ id: uid("S"), brandId, month, code: x.code || x.name, name: x.name || x.code, dept: x.dept, category: x.category, enName: x.enName, warehouse: x.warehouse, auditDate: x.auditDate, srcFile: f.name }));
         if (items.length === 0) { toast("未讀到有效店鋪資料，請確認欄位（店鋪代碼/店名）"); e.target.value = ""; return; }
-        setDB((d) => ({ ...d, stores: [...d.stores, ...items] }));
-        toast(`已匯入 ${items.length} 家店鋪 ✔`);
+        // 同檔名重匯：先清掉上次此檔匯入的店鋪（本品牌本月），保留手動新增與其他檔匯入
+        const prior = db.stores.filter((s) => s.srcFile === f.name && s.brandId === brandId && s.month === month).length;
+        setDB((d) => ({ ...d, stores: [...d.stores.filter((s) => !(s.srcFile === f.name && s.brandId === brandId && s.month === month)), ...items] }));
+        toast(`已匯入 ${items.length} 家店鋪 ✔${prior ? `（已清除同檔名舊資料 ${prior} 筆）` : ""}`);
       } else {
         const hDiv = findH(/部別|部門|div/i);
         const hSec = findH(/課別|主責課/i);
@@ -1096,10 +1118,11 @@ function MaintainZone({ db, setDB, month, setMonth, toast }) {
         const get = (r, h) => h ? String(r[h] == null ? "" : r[h]).trim() : "";
         const items = rows.map((r) => ({ div: get(r, hDiv), dept: get(r, hSec), empNo: get(r, hEmp), name: get(r, hNm), title: get(r, hTitle) }))
           .filter((x) => x.empNo && x.name)
-          .map((x) => ({ id: uid("P"), brandId, month, div: x.div, dept: x.dept, empNo: x.empNo, name: x.name, title: x.title }));
+          .map((x) => ({ id: uid("P"), brandId, month, div: x.div, dept: x.dept, empNo: x.empNo, name: x.name, title: x.title, srcFile: f.name }));
         if (items.length === 0) { toast("未讀到有效人員資料，請確認欄位（工號／姓名）"); e.target.value = ""; return; }
-        setDB((d) => ({ ...d, staff: [...d.staff, ...items] }));
-        toast(`已匯入 ${items.length} 位盤點人員 ✔`);
+        const prior = db.staff.filter((p) => p.srcFile === f.name && p.brandId === brandId && p.month === month).length;
+        setDB((d) => ({ ...d, staff: [...d.staff.filter((p) => !(p.srcFile === f.name && p.brandId === brandId && p.month === month)), ...items] }));
+        toast(`已匯入 ${items.length} 位盤點人員 ✔${prior ? `（已清除同檔名舊資料 ${prior} 筆）` : ""}`);
       }
     } catch (err) { toast("Excel 解析失敗，請確認檔案格式"); }
     e.target.value = "";
@@ -1182,13 +1205,13 @@ function MaintainZone({ db, setDB, month, setMonth, toast }) {
                   <th className="py-2 pr-4">店鋪種類</th><th className="py-2 pr-4">英文店名</th><th className="py-2 pr-4">倉別量</th><th className="py-2 pr-4">盤點日期</th><th className="py-2 pr-4">操作</th>
                 </tr>
                 <tr className="border-b">
-                  <th className="py-1 pr-4"><FilterInput value={sFilters.code} onChange={(v) => setSF("code", v)} /></th>
-                  <th className="py-1 pr-4"><FilterInput value={sFilters.name} onChange={(v) => setSF("name", v)} /></th>
-                  <th className="py-1 pr-4"><FilterInput value={sFilters.dept} onChange={(v) => setSF("dept", v)} /></th>
-                  <th className="py-1 pr-4"><FilterInput value={sFilters.category} onChange={(v) => setSF("category", v)} /></th>
-                  <th className="py-1 pr-4"><FilterInput value={sFilters.enName} onChange={(v) => setSF("enName", v)} /></th>
-                  <th className="py-1 pr-4"><FilterInput value={sFilters.warehouse} onChange={(v) => setSF("warehouse", v)} /></th>
-                  <th className="py-1 pr-4"><FilterInput value={sFilters.auditDate} onChange={(v) => setSF("auditDate", v)} /></th>
+                  <th className="py-1 pr-4"><FilterSelect value={sFilters.code} onChange={(v) => setSF("code", v)} options={distinctVals(baseStores, "code")} /></th>
+                  <th className="py-1 pr-4"><FilterSelect value={sFilters.name} onChange={(v) => setSF("name", v)} options={distinctVals(baseStores, "name")} /></th>
+                  <th className="py-1 pr-4"><FilterSelect value={sFilters.dept} onChange={(v) => setSF("dept", v)} options={distinctVals(baseStores, "dept")} /></th>
+                  <th className="py-1 pr-4"><FilterSelect value={sFilters.category} onChange={(v) => setSF("category", v)} options={distinctVals(baseStores, "category")} /></th>
+                  <th className="py-1 pr-4"><FilterSelect value={sFilters.enName} onChange={(v) => setSF("enName", v)} options={distinctVals(baseStores, "enName")} /></th>
+                  <th className="py-1 pr-4"><FilterSelect value={sFilters.warehouse} onChange={(v) => setSF("warehouse", v)} options={distinctVals(baseStores, "warehouse")} /></th>
+                  <th className="py-1 pr-4"><FilterSelect value={sFilters.auditDate} onChange={(v) => setSF("auditDate", v)} options={distinctVals(baseStores, "auditDate")} /></th>
                   <th></th>
                 </tr>
               </thead>
@@ -1225,11 +1248,11 @@ function MaintainZone({ db, setDB, month, setMonth, toast }) {
               <thead>
                 <tr className="text-left text-slate-500 border-b"><th className="py-2 pr-4">部別</th><th className="py-2 pr-4">課別</th><th className="py-2 pr-4">工號</th><th className="py-2 pr-4">姓名</th><th className="py-2 pr-4">職稱</th><th className="py-2 pr-4">操作</th></tr>
                 <tr className="border-b">
-                  <th className="py-1 pr-4"><FilterInput value={pFilters.div} onChange={(v) => setPF("div", v)} /></th>
-                  <th className="py-1 pr-4"><FilterInput value={pFilters.dept} onChange={(v) => setPF("dept", v)} /></th>
-                  <th className="py-1 pr-4"><FilterInput value={pFilters.empNo} onChange={(v) => setPF("empNo", v)} /></th>
-                  <th className="py-1 pr-4"><FilterInput value={pFilters.name} onChange={(v) => setPF("name", v)} /></th>
-                  <th className="py-1 pr-4"><FilterInput value={pFilters.title} onChange={(v) => setPF("title", v)} /></th>
+                  <th className="py-1 pr-4"><FilterSelect value={pFilters.div} onChange={(v) => setPF("div", v)} options={distinctVals(baseStaff, "div")} /></th>
+                  <th className="py-1 pr-4"><FilterSelect value={pFilters.dept} onChange={(v) => setPF("dept", v)} options={distinctVals(baseStaff, "dept")} /></th>
+                  <th className="py-1 pr-4"><FilterSelect value={pFilters.empNo} onChange={(v) => setPF("empNo", v)} options={distinctVals(baseStaff, "empNo")} /></th>
+                  <th className="py-1 pr-4"><FilterSelect value={pFilters.name} onChange={(v) => setPF("name", v)} options={distinctVals(baseStaff, "name")} /></th>
+                  <th className="py-1 pr-4"><FilterSelect value={pFilters.title} onChange={(v) => setPF("title", v)} options={distinctVals(baseStaff, "title")} /></th>
                   <th></th>
                 </tr>
               </thead>
@@ -1434,9 +1457,6 @@ function App() {
             </div>
           </div>
 
-          <input type="month" value={month} onChange={(e) => setMonth(e.target.value)}
-            className="px-2 py-1.5 rounded-lg text-sm text-slate-800 bg-white" title="盤點月份" />
-
           {/* 手動重新整理 */}
           <button onClick={refresh} disabled={syncing} title="重新整理（抓最新資料）"
             className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 disabled:opacity-50 rounded-lg text-sm">
@@ -1490,9 +1510,9 @@ function App() {
 
       {/* 主內容 */}
       <main className="max-w-7xl mx-auto px-4 py-6">
-        {tab === "download" && <DownloadZone db={db} month={month} toast={toast} />}
-        {tab === "fill" && <FillZone db={db} setDB={setDB} month={month} user={user} toast={toast} />}
-        {tab === "analysis" && <AnalysisZone db={db} month={month} toast={toast} />}
+        {tab === "download" && <DownloadZone db={db} month={month} setMonth={setMonth} toast={toast} />}
+        {tab === "fill" && <FillZone db={db} setDB={setDB} month={month} setMonth={setMonth} user={user} toast={toast} />}
+        {tab === "analysis" && <AnalysisZone db={db} month={month} setMonth={setMonth} toast={toast} />}
         {tab === "maintain" && <MaintainZone db={db} setDB={setDB} month={month} setMonth={setMonth} toast={toast} />}
       </main>
 
