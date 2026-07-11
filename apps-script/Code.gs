@@ -135,7 +135,7 @@ function uploadPhoto(dataUrl, filename) {
  * 資料工作表：第一列為欄位名稱，其後每列一筆。全部純文字格式。
  * 這樣可容納數萬列，不受單一儲存格 5 萬字元限制。
  */
-var MASTER_INDEX_HEADERS = ["storeId", "month", "type", "sheet"];
+var MASTER_INDEX_HEADERS = ["storeId", "month", "type", "sheet", "srcDate"];
 
 function masterIndexSheet() {
   var sh = sheet("masters");
@@ -153,7 +153,7 @@ function mastersIndex() {
   var out = [];
   for (var i = 1; i < v.length; i++) {
     if (String(v[i][0]) === "") continue;
-    out.push({ storeId: v[i][0], month: v[i][1], type: v[i][2] });
+    out.push({ storeId: v[i][0], month: v[i][1], type: v[i][2], srcDate: v[i][4] || "" });
   }
   return out;
 }
@@ -204,11 +204,13 @@ function putMaster(rec) {
   var sh = masterIndexSheet();
   var v = sh.getDataRange().getValues();
   for (var i = 1; i < v.length; i++) {
-    if (String(v[i][0]) === String(rec.storeId) && String(v[i][1]) === String(rec.month) && String(v[i][2]) === String(rec.type)) return;
+    if (String(v[i][0]) === String(rec.storeId) && String(v[i][1]) === String(rec.month) && String(v[i][2]) === String(rec.type)) {
+      var rgU = sh.getRange(i + 1, 4, 1, 2); rgU.setNumberFormat("@"); rgU.setValues([[name, rec.srcDate || ""]]); return;
+    }
   }
   var ri = sh.getLastRow() + 1;
   var rg2 = sh.getRange(ri, 1, 1, MASTER_INDEX_HEADERS.length);
-  rg2.setNumberFormat("@"); rg2.setValues([[rec.storeId, rec.month, rec.type, name]]);
+  rg2.setNumberFormat("@"); rg2.setValues([[rec.storeId, rec.month, rec.type, name, rec.srcDate || ""]]);
 }
 
 function safeParse(v, dft) {

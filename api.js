@@ -32,7 +32,7 @@ const InventoryAPI = {
       const raw = localStorage.getItem(_DB_KEY);
       if (raw) {
         const db = JSON.parse(raw);
-        db.mastersIndex = this._localMasters().map((m) => ({ storeId: m.storeId, month: m.month, type: m.type }));
+        db.mastersIndex = this._localMasters().map((m) => ({ storeId: m.storeId, month: m.month, type: m.type, srcDate: m.srcDate || "" }));
         return db;
       }
     } catch (e) { /* 資料毀損時回退種子 */ }

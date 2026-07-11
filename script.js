@@ -32,20 +32,17 @@ const seedDB = {
     { id: "S007", brandId: "B03", month: CURRENT_MONTH, code: "AT-002", name: "歐都納-新竹店", dept: "北二課" },
   ],
   staff: [
-    { id: "P001", brandId: "B01", month: CURRENT_MONTH, empNo: "E001", name: "王小明（範例）" },
-    { id: "P002", brandId: "B01", month: CURRENT_MONTH, empNo: "E002", name: "李小華（範例）" },
-    { id: "P003", brandId: "B02", month: CURRENT_MONTH, empNo: "E003", name: "張小美（範例）" },
-    { id: "P004", brandId: "B03", month: CURRENT_MONTH, empNo: "E004", name: "陳小強（範例）" },
+    { id: "P001", brandId: "B01", month: CURRENT_MONTH, div: "一部", dept: "北一課", empNo: "E001", name: "王小明（範例）", title: "資深專員" },
+    { id: "P002", brandId: "B01", month: CURRENT_MONTH, div: "一部", dept: "北二課", empNo: "E002", name: "李小華（範例）", title: "專員" },
+    { id: "P003", brandId: "B02", month: CURRENT_MONTH, div: "一部", dept: "北一課", empNo: "E003", name: "張小美（範例）", title: "專員" },
+    { id: "P004", brandId: "B03", month: CURRENT_MONTH, div: "二部", dept: "台中課", empNo: "E004", name: "陳小強（範例）", title: "課長" },
   ],
-  // 單價設定：priceType = "piece"（依件數）或 "hour"（依人時）
+  // 單價設定：一個品牌一個價。priceType = "piece"（依件數）或 "hour"（依人時）
+  // 英斯伯(B02)另有 docFee(文件處理費)、otFee(超時費)，每場加收
   prices: [
-    { storeId: "S001", priceType: "piece", unitPrice: 0.5 },
-    { storeId: "S002", priceType: "piece", unitPrice: 0.5 },
-    { storeId: "S003", priceType: "piece", unitPrice: 0.55 },
-    { storeId: "S004", priceType: "hour", unitPrice: 320 },
-    { storeId: "S005", priceType: "hour", unitPrice: 320 },
-    { storeId: "S006", priceType: "piece", unitPrice: 0.6 },
-    { storeId: "S007", priceType: "piece", unitPrice: 0.6 },
+    { brandId: "B01", priceType: "piece", unitPrice: 0.5 },
+    { brandId: "B02", priceType: "hour", unitPrice: 320, docFee: 500, otFee: 200 },
+    { brandId: "B03", priceType: "piece", unitPrice: 0.6 },
   ],
   // 填寫區作業紀錄
   records: [
@@ -140,6 +137,16 @@ const isOshengBrand = (brand) => !!brand && brand.name === "歐聖";
 
 // 是否為整數字串
 function isIntStr(v) { const s = String(v == null ? "" : v).trim(); return s === "" || /^-?\d+$/.test(s); }
+
+// 從客戶檔名解析日期，例 "TW JEW_6Jan26-原" → "20260106"（找不到回空字串）
+const MON3 = { jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6, jul: 7, aug: 8, sep: 9, oct: 10, nov: 11, dec: 12 };
+function parseDateFromName(fn) {
+  const m = String(fn || "").match(/(\d{1,2})\s*([A-Za-z]{3,})\s*(\d{2,4})/);
+  if (!m) return "";
+  const d = +m[1], mo = MON3[m[2].slice(0, 3).toLowerCase()], y = m[3].length <= 2 ? 2000 + (+m[3]) : +m[3];
+  if (!mo) return "";
+  return "" + y + String(mo).padStart(2, "0") + String(d).padStart(2, "0");
+}
 // 找第一個重複值（找不到回傳 null）
 function firstDup(arr) { const seen = new Set(); for (const x of arr) { const k = String(x); if (seen.has(k)) return k; seen.add(k); } return null; }
 // 店名正規化後比對（英文店名 ← 客戶檔欄標題，容許大小寫/空白/底線/連字差異）
@@ -269,7 +276,8 @@ function DownloadZone({ db, month, toast }) {
       const m = await InventoryAPI.getMaster(key, month, type);
       if (!m || !m.columns || m.columns.length === 0) { toast(`查無此${label}，請重新整理或請管理者上傳`); return; }
       const rows = m.rows.map((r) => m.columns.map((c) => (r[c] == null ? "" : r[c])));
-      const dateStr = new Date().toISOString().slice(0, 10).replace(/-/g, "");
+      const idxEntry = index.find((x) => x.storeId === key && x.month === month && x.type === type);
+      const dateStr = (idxEntry && idxEntry.srcDate) ? idxEntry.srcDate : new Date().toISOString().slice(0, 10).replace(/-/g, "");
       exportXLSX(`${brand ? brand.name : ""}盤點用${label}-${namePart}-${dateStr}.xlsx`, label, [m.columns, ...rows], { asText: true });
       toast(`已下載 ${namePart} ${label}（${m.rows.length} 筆）`);
     } catch (e) {
@@ -652,8 +660,9 @@ function UploadZone({ db, setDB, month, toast, brandId }) {
       datasets.push({ storeId: store.id, rows });
     }
     if (datasets.length === 0) { toast("沒有可對應的店鋪，請確認切分欄與名單"); return; }
+    const srcDate = parseDateFromName(file.name);
     const addedIdx = [];
-    for (const d of datasets) { await InventoryAPI.putMaster({ storeId: d.storeId, month, type: fileType, columns: MASTER_COLS, rows: d.rows }); addedIdx.push({ storeId: d.storeId, month, type: fileType }); }
+    for (const d of datasets) { await InventoryAPI.putMaster({ storeId: d.storeId, month, type: fileType, srcDate, columns: MASTER_COLS, rows: d.rows }); addedIdx.push({ storeId: d.storeId, month, type: fileType }); }
     await finalize(addedIdx, datasets.length, unmatched, label);
   };
 
@@ -666,7 +675,7 @@ function UploadZone({ db, setDB, month, toast, brandId }) {
       "商品編號": String(src["商品條碼"] == null ? "" : src["商品條碼"]).trim(),
       "barcode": String(src["商品條碼"] == null ? "" : src["商品條碼"]).trim(),
       "舊商品編號2": "",
-      "物品名稱": ["STYLENUMBER", "顏色", "尺寸"].map((k) => String(src[k] == null ? "" : src[k]).trim()).filter(Boolean).join(" "),
+      "物品名稱": ["STYLENUMBER", "顏色", "尺寸"].map((k) => String(src[k] == null ? "" : src[k]).trim()).filter(Boolean).join("-"),
       "品項平均成本": String(src["零售價"] == null ? "" : src["零售價"]).trim(),
       "庫存數量": qty,
     });
@@ -687,19 +696,30 @@ function UploadZone({ db, setDB, month, toast, brandId }) {
       const cats = new Set();
       storeCols.forEach((h) => { const s = chosen(h); if (s && s.category) cats.add(s.category); });
       if (cats.size === 0) { toast("找不到店鋪種類：請在下方為店名欄選擇對應店鋪，或先於維護區維護名單（店鋪種類）"); return; }
+      const srcDate = parseDateFromName(file.name);
       const addedIdx = [];
-      for (const cat of cats) { await InventoryAPI.putMaster({ storeId: "CAT::" + cat, month, type: "master", columns: MASTER_COLS, rows }); addedIdx.push({ storeId: "CAT::" + cat, month, type: "master" }); }
+      for (const cat of cats) { await InventoryAPI.putMaster({ storeId: "CAT::" + cat, month, type: "master", srcDate, columns: MASTER_COLS, rows }); addedIdx.push({ storeId: "CAT::" + cat, month, type: "master" }); }
       await finalize(addedIdx, cats.size, [], `主檔（種類：${Array.from(cats).join("、")}）`, learnAliases());
     } else {
       // 庫存檔：每個店名/倉別欄各一份，數量帶該欄（先驗證整數）
       for (const h of storeCols) { for (const src of parsed.rows) { if (!isIntStr(src[h])) { toast(`庫存數量須為整數（欄「${h}」）`); return; } } }
+      // 檢查：一家店只能對應一個客戶庫存欄（單倉別店鋪；多倉別請用各自的店鋪列），避免覆蓋
+      const chosenCounts = {};
+      storeCols.forEach((h) => { const sid = colStore[h]; if (sid) chosenCounts[sid] = (chosenCounts[sid] || 0) + 1; });
+      for (const sid of Object.keys(chosenCounts)) {
+        if (chosenCounts[sid] > 1) {
+          const st = stores.find((s) => s.id === sid);
+          toast(`「${st ? st.code + " " + st.name : sid}」被對應到 ${chosenCounts[sid]} 個庫存欄，一家店只能對應一個庫存檔（多倉別請分列不同店鋪）`); return;
+        }
+      }
+      const srcDate = parseDateFromName(file.name);
       const addedIdx = []; let matched = 0; const unmatched = [];
       for (const h of storeCols) {
         const store = chosen(h);
         if (!store) { unmatched.push(h); continue; }
         const rows = parsed.rows.map((src) => mapRow(src, String(src[h] == null || src[h] === "" ? "0" : src[h]).trim()));
         if (firstDup(rows.map((r) => r[CODE_COL]))) { toast("主檔商品編號重複"); return; }
-        await InventoryAPI.putMaster({ storeId: store.id, month, type: "stock", columns: MASTER_COLS, rows });
+        await InventoryAPI.putMaster({ storeId: store.id, month, type: "stock", srcDate, columns: MASTER_COLS, rows });
         addedIdx.push({ storeId: store.id, month, type: "stock" }); matched++;
       }
       if (matched === 0) { toast("尚未對應任何店鋪，請在下方為店名欄選擇對應店鋪"); return; }
@@ -872,39 +892,37 @@ function AnalysisZone({ db, month, toast }) {
       .map((r) => {
         const store = db.stores.find((s) => s.id === r.storeId);
         const brand = db.brands.find((b) => b.id === r.brandId);
-        const price = db.prices.find((p) => p.storeId === r.storeId);
+        const price = db.prices.find((p) => p.brandId === r.brandId); // 單價以品牌為準
         const pieces = num(r.pieces);          // 後端可能回字串，統一轉數字
         const headcount = num(r.headcount);
         const unitPrice = price ? num(price.unitPrice) : 0;
         const hoursVal = calcHours(r.startTime, r.endTime);
         const manHours = Math.round(hoursVal * headcount * 100) / 100;
         const efficiency = manHours > 0 ? Math.round(pieces / manHours) : 0;
-        let amount = 0, priceDesc = "未設定單價";
+        let base = 0, priceDesc = "未設定單價";
         if (price) {
-          if (price.priceType === "piece") {
-            amount = Math.round(pieces * unitPrice);
-            priceDesc = `${unitPrice} 元/件`;
-          } else {
-            amount = Math.round(manHours * unitPrice);
-            priceDesc = `${unitPrice} 元/人時`;
-          }
+          if (price.priceType === "piece") { base = Math.round(pieces * unitPrice); priceDesc = `${unitPrice} 元/件`; }
+          else { base = Math.round(manHours * unitPrice); priceDesc = `${unitPrice} 元/人時`; }
         }
-        return { ...r, pieces, headcount, storeName: store?.name || r.storeId, dept: store?.dept || "", brandName: brand?.name, hoursVal, manHours, efficiency, amount, priceDesc };
+        const docFee = price ? num(price.docFee) : 0;   // 英斯伯：每場文件處理費
+        const otFee = price ? num(price.otFee) : 0;     // 英斯伯：每場超時費
+        const amount = base + docFee + otFee;
+        return { ...r, pieces, headcount, storeName: store?.name || r.storeId, dept: store?.dept || "", brandName: brand?.name, hoursVal, manHours, efficiency, base, docFee, otFee, amount, priceDesc };
       });
   }, [db, month, brandId]);
 
   const viewRows = rows.filter((r) => matchFilters(r, filters)); // 套用欄位篩選
   const totals = viewRows.reduce((a, r) => ({
-    pieces: a.pieces + r.pieces, manHours: a.manHours + r.manHours, amount: a.amount + r.amount,
-  }), { pieces: 0, manHours: 0, amount: 0 });
+    pieces: a.pieces + r.pieces, manHours: a.manHours + r.manHours, base: a.base + r.base, docFee: a.docFee + r.docFee, otFee: a.otFee + r.otFee, amount: a.amount + r.amount,
+  }), { pieces: 0, manHours: 0, base: 0, docFee: 0, otFee: 0, amount: 0 });
 
   // 匯出請款資料
   const exportBilling = () => {
     if (viewRows.length === 0) { toast("目前沒有可匯出的資料"); return; }
     exportXLSX(`請款資料_${month}.xlsx`, `請款資料_${month}`, [
-      ["品牌", "店鋪", "主責課", "盤點日期", "件數", "人數", "時數", "人時", "計價方式", "請款金額"],
-      ...viewRows.map((r) => [r.brandName, r.storeName, r.dept, r.date, r.pieces, r.headcount, r.hoursVal, r.manHours, r.priceDesc, r.amount]),
-      ["合計", "", "", "", totals.pieces, "", "", totals.manHours, "", totals.amount],
+      ["品牌", "店鋪", "主責課", "盤點日期", "件數", "人數", "時數", "人時", "計價方式", "作業費", "文件處理費", "超時費", "請款金額"],
+      ...viewRows.map((r) => [r.brandName, r.storeName, r.dept, r.date, r.pieces, r.headcount, r.hoursVal, r.manHours, r.priceDesc, r.base, r.docFee, r.otFee, r.amount]),
+      ["合計", "", "", "", totals.pieces, "", "", totals.manHours, "", totals.base, totals.docFee, totals.otFee, totals.amount],
     ]);
     toast("請款資料 Excel 已匯出 ✔");
   };
@@ -997,8 +1015,8 @@ function MaintainZone({ db, setDB, month, setMonth, toast }) {
   const [brandId, setBrandId] = useState(db.brands[0]?.id || "");
   const [tab, setTab] = useState("stores");
   const [newBrand, setNewBrand] = useState("");
-  const [storeForm, setStoreForm] = useState({ code: "", name: "", dept: "", category: "", enName: "", warehouse: "" });
-  const [staffForm, setStaffForm] = useState({ empNo: "", name: "" });
+  const [storeForm, setStoreForm] = useState({ code: "", name: "", dept: "", category: "", enName: "", warehouse: "", auditDate: "" });
+  const [staffForm, setStaffForm] = useState({ div: "", dept: "", empNo: "", name: "", title: "" });
   const [sFilters, setSFilters] = useState({});   // 店鋪篩選
   const [pFilters, setPFilters] = useState({});   // 人員篩選
   const setSF = (k, v) => setSFilters((p) => ({ ...p, [k]: v }));
@@ -1020,27 +1038,27 @@ function MaintainZone({ db, setDB, month, setMonth, toast }) {
 
   const addStore = () => {
     if (!storeForm.code.trim() || !storeForm.name.trim()) { toast("店鋪代碼與名稱皆為必填"); return; }
-    setDB((d) => ({ ...d, stores: [...d.stores, { id: uid("S"), brandId, month, code: storeForm.code.trim(), name: storeForm.name.trim(), dept: storeForm.dept.trim(), category: storeForm.category.trim(), enName: storeForm.enName.trim(), warehouse: storeForm.warehouse.trim() }] }));
-    setStoreForm({ code: "", name: "", dept: "", category: "", enName: "", warehouse: "" });
+    setDB((d) => ({ ...d, stores: [...d.stores, { id: uid("S"), brandId, month, code: storeForm.code.trim(), name: storeForm.name.trim(), dept: storeForm.dept.trim(), category: storeForm.category.trim(), enName: storeForm.enName.trim(), warehouse: storeForm.warehouse.trim(), auditDate: storeForm.auditDate.trim() }] }));
+    setStoreForm({ code: "", name: "", dept: "", category: "", enName: "", warehouse: "", auditDate: "" });
     toast("店鋪已新增 ✔");
   };
 
   const addStaff = () => {
-    if (!staffForm.empNo.trim() || !staffForm.name.trim()) { toast("員工編號與姓名皆為必填"); return; }
-    setDB((d) => ({ ...d, staff: [...d.staff, { id: uid("P"), brandId, month, empNo: staffForm.empNo.trim(), name: staffForm.name.trim() }] }));
-    setStaffForm({ empNo: "", name: "" });
+    if (!staffForm.empNo.trim() || !staffForm.name.trim()) { toast("工號與姓名皆為必填"); return; }
+    setDB((d) => ({ ...d, staff: [...d.staff, { id: uid("P"), brandId, month, div: staffForm.div.trim(), dept: staffForm.dept.trim(), empNo: staffForm.empNo.trim(), name: staffForm.name.trim(), title: staffForm.title.trim() }] }));
+    setStaffForm({ div: "", dept: "", empNo: "", name: "", title: "" });
     toast("盤點人員已新增 ✔");
   };
 
   // 匯入範本欄位
   const TEMPLATES = {
-    stores: ["店鋪代碼", "店鋪名稱", "主責課", "店鋪種類", "英文店名", "倉別"],
-    staff: ["員工編號", "姓名"],
+    stores: ["店鋪代碼", "店鋪名稱", "主責課", "店鋪種類", "英文店名", "倉別量", "盤點日期"],
+    staff: ["部別", "課別", "工號", "姓名", "職稱"],
   };
   // 下載匯入範本（Excel）
   const downloadTemplate = (kind) => {
     const label = kind === "stores" ? "店鋪名單" : "盤點人員名單";
-    exportXLSX(`${label}_匯入範本.xlsx`, label, [TEMPLATES[kind], kind === "stores" ? ["AS-001", "微風本館 JV", "北一課", "JV", "JV BREEZE MAIN", ""] : ["E001", "範例姓名"]]);
+    exportXLSX(`${label}_匯入範本.xlsx`, label, [TEMPLATES[kind], kind === "stores" ? ["AS-001", "微風本館 JV", "北一課", "JV", "JV BREEZE MAIN", "1", "2026-01-06"] : ["一部", "北一課", "E001", "範例姓名", "資深專員"]]);
     toast(`已下載${label}匯入範本`);
   };
 
@@ -1061,18 +1079,25 @@ function MaintainZone({ db, setDB, month, setMonth, toast }) {
         const hCat = findH(/主檔類別|店鋪種類|類別|種類|category/i);
         const hEn = findH(/英文/i) || findH(/enName/i);
         const hWh = findH(/倉別/i);
+        const hAudit = findH(/盤點日期|日期|date/i);
         const get = (r, h) => h ? String(r[h] == null ? "" : r[h]).trim() : "";
-        const items = rows.map((r) => ({ code: get(r, hCode), name: get(r, hName), dept: get(r, hDept), category: get(r, hCat), enName: get(r, hEn), warehouse: get(r, hWh) }))
+        const items = rows.map((r) => ({ code: get(r, hCode), name: get(r, hName), dept: get(r, hDept), category: get(r, hCat), enName: get(r, hEn), warehouse: get(r, hWh), auditDate: get(r, hAudit) }))
           .filter((x) => x.code || x.name)
-          .map((x) => ({ id: uid("S"), brandId, month, code: x.code || x.name, name: x.name || x.code, dept: x.dept, category: x.category, enName: x.enName, warehouse: x.warehouse }));
+          .map((x) => ({ id: uid("S"), brandId, month, code: x.code || x.name, name: x.name || x.code, dept: x.dept, category: x.category, enName: x.enName, warehouse: x.warehouse, auditDate: x.auditDate }));
         if (items.length === 0) { toast("未讀到有效店鋪資料，請確認欄位（店鋪代碼/店名）"); e.target.value = ""; return; }
         setDB((d) => ({ ...d, stores: [...d.stores, ...items] }));
         toast(`已匯入 ${items.length} 家店鋪 ✔`);
       } else {
-        const items = rows.map((r) => ({ empNo: pick(r, ["員工編號", "員編", "empNo"]), name: pick(r, ["姓名", "名稱", "name"]) }))
+        const hDiv = findH(/部別|部門|div/i);
+        const hSec = findH(/課別|主責課/i);
+        const hEmp = findH(/工號|員工編號|員編|empNo/i);
+        const hNm = headers.find((h) => /姓名|名稱|name/i.test(String(h)));
+        const hTitle = findH(/職稱|職務|title/i);
+        const get = (r, h) => h ? String(r[h] == null ? "" : r[h]).trim() : "";
+        const items = rows.map((r) => ({ div: get(r, hDiv), dept: get(r, hSec), empNo: get(r, hEmp), name: get(r, hNm), title: get(r, hTitle) }))
           .filter((x) => x.empNo && x.name)
-          .map((x) => ({ id: uid("P"), brandId, month, empNo: x.empNo, name: x.name }));
-        if (items.length === 0) { toast("未讀到有效人員資料，請用範本格式（員工編號／姓名）"); e.target.value = ""; return; }
+          .map((x) => ({ id: uid("P"), brandId, month, div: x.div, dept: x.dept, empNo: x.empNo, name: x.name, title: x.title }));
+        if (items.length === 0) { toast("未讀到有效人員資料，請確認欄位（工號／姓名）"); e.target.value = ""; return; }
         setDB((d) => ({ ...d, staff: [...d.staff, ...items] }));
         toast(`已匯入 ${items.length} 位盤點人員 ✔`);
       }
@@ -1083,12 +1108,13 @@ function MaintainZone({ db, setDB, month, setMonth, toast }) {
   const removeStore = (id) => setDB((d) => ({ ...d, stores: d.stores.filter((s) => s.id !== id) }));
   const removeStaff = (id) => setDB((d) => ({ ...d, staff: d.staff.filter((p) => p.id !== id) }));
 
-  const setPrice = (storeId, patch) => {
+  // 單價以品牌為單位
+  const setPrice = (bId, patch) => {
     setDB((d) => {
-      const exists = d.prices.find((p) => p.storeId === storeId);
+      const exists = d.prices.find((p) => p.brandId === bId);
       const prices = exists
-        ? d.prices.map((p) => (p.storeId === storeId ? { ...p, ...patch } : p))
-        : [...d.prices, { storeId, priceType: "piece", unitPrice: 0, ...patch }];
+        ? d.prices.map((p) => (p.brandId === bId ? { ...p, ...patch } : p))
+        : [...d.prices, { brandId: bId, priceType: "piece", unitPrice: 0, ...patch }];
       return { ...d, prices };
     });
   };
@@ -1143,8 +1169,9 @@ function MaintainZone({ db, setDB, month, setMonth, toast }) {
             <input placeholder="店鋪名稱" value={storeForm.name} onChange={(e) => setStoreForm({ ...storeForm, name: e.target.value })} className={inputCls + " w-36"} />
             <input placeholder="主責課" value={storeForm.dept} onChange={(e) => setStoreForm({ ...storeForm, dept: e.target.value })} className={inputCls + " w-24"} />
             <input placeholder="店鋪種類" value={storeForm.category} onChange={(e) => setStoreForm({ ...storeForm, category: e.target.value })} className={inputCls + " w-24"} />
-            <input placeholder="英文店名（對應客戶檔）" value={storeForm.enName} onChange={(e) => setStoreForm({ ...storeForm, enName: e.target.value })} className={inputCls + " w-52"} />
-            <input placeholder="倉別" value={storeForm.warehouse} onChange={(e) => setStoreForm({ ...storeForm, warehouse: e.target.value })} className={inputCls + " w-24"} />
+            <input placeholder="英文店名（對應客戶檔）" value={storeForm.enName} onChange={(e) => setStoreForm({ ...storeForm, enName: e.target.value })} className={inputCls + " w-48"} />
+            <input placeholder="倉別量" value={storeForm.warehouse} onChange={(e) => setStoreForm({ ...storeForm, warehouse: e.target.value })} className={inputCls + " w-20"} />
+            <input placeholder="盤點日期" value={storeForm.auditDate} onChange={(e) => setStoreForm({ ...storeForm, auditDate: e.target.value })} className={inputCls + " w-28"} />
             <button onClick={addStore} className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm rounded-lg">＋ 單筆新增</button>
           </div>
           <div className="table-scroll">
@@ -1152,7 +1179,7 @@ function MaintainZone({ db, setDB, month, setMonth, toast }) {
               <thead>
                 <tr className="text-left text-slate-500 border-b">
                   <th className="py-2 pr-4">代碼</th><th className="py-2 pr-4">名稱</th><th className="py-2 pr-4">主責課</th>
-                  <th className="py-2 pr-4">店鋪種類</th><th className="py-2 pr-4">英文店名</th><th className="py-2 pr-4">倉別</th><th className="py-2 pr-4">操作</th>
+                  <th className="py-2 pr-4">店鋪種類</th><th className="py-2 pr-4">英文店名</th><th className="py-2 pr-4">倉別量</th><th className="py-2 pr-4">盤點日期</th><th className="py-2 pr-4">操作</th>
                 </tr>
                 <tr className="border-b">
                   <th className="py-1 pr-4"><FilterInput value={sFilters.code} onChange={(v) => setSF("code", v)} /></th>
@@ -1161,6 +1188,7 @@ function MaintainZone({ db, setDB, month, setMonth, toast }) {
                   <th className="py-1 pr-4"><FilterInput value={sFilters.category} onChange={(v) => setSF("category", v)} /></th>
                   <th className="py-1 pr-4"><FilterInput value={sFilters.enName} onChange={(v) => setSF("enName", v)} /></th>
                   <th className="py-1 pr-4"><FilterInput value={sFilters.warehouse} onChange={(v) => setSF("warehouse", v)} /></th>
+                  <th className="py-1 pr-4"><FilterInput value={sFilters.auditDate} onChange={(v) => setSF("auditDate", v)} /></th>
                   <th></th>
                 </tr>
               </thead>
@@ -1168,11 +1196,11 @@ function MaintainZone({ db, setDB, month, setMonth, toast }) {
                 {stores.map((s) => (
                   <tr key={s.id} className="border-b last:border-0">
                     <td className="py-2 pr-4 font-mono">{s.code}</td><td className="py-2 pr-4">{s.name}</td><td className="py-2 pr-4">{s.dept || "—"}</td>
-                    <td className="py-2 pr-4">{s.category || "—"}</td><td className="py-2 pr-4">{s.enName || "—"}</td><td className="py-2 pr-4">{s.warehouse || "—"}</td>
+                    <td className="py-2 pr-4">{s.category || "—"}</td><td className="py-2 pr-4">{s.enName || "—"}</td><td className="py-2 pr-4">{s.warehouse || "—"}</td><td className="py-2 pr-4">{s.auditDate || "—"}</td>
                     <td className="py-2 pr-4"><button onClick={() => removeStore(s.id)} className="text-red-500 hover:underline">刪除</button></td>
                   </tr>
                 ))}
-                {stores.length === 0 && <tr><td colSpan="7" className="py-6 text-center text-slate-400">查無店鋪，請匯入或新增</td></tr>}
+                {stores.length === 0 && <tr><td colSpan="8" className="py-6 text-center text-slate-400">查無店鋪，請匯入或新增</td></tr>}
               </tbody>
             </table>
           </div>
@@ -1185,28 +1213,34 @@ function MaintainZone({ db, setDB, month, setMonth, toast }) {
           <div className="flex flex-wrap gap-3 items-center">
             {importBtn("staff", "盤點人員名單")}
             <span className="text-slate-300">|</span>
-            <input placeholder="員工編號" value={staffForm.empNo} onChange={(e) => setStaffForm({ ...staffForm, empNo: e.target.value })} className={inputCls + " w-32"} />
-            <input placeholder="姓名（請用範例資料）" value={staffForm.name} onChange={(e) => setStaffForm({ ...staffForm, name: e.target.value })} className={inputCls + " w-52"} />
+            <input placeholder="部別" value={staffForm.div} onChange={(e) => setStaffForm({ ...staffForm, div: e.target.value })} className={inputCls + " w-20"} />
+            <input placeholder="課別" value={staffForm.dept} onChange={(e) => setStaffForm({ ...staffForm, dept: e.target.value })} className={inputCls + " w-24"} />
+            <input placeholder="工號" value={staffForm.empNo} onChange={(e) => setStaffForm({ ...staffForm, empNo: e.target.value })} className={inputCls + " w-28"} />
+            <input placeholder="姓名（請用範例資料）" value={staffForm.name} onChange={(e) => setStaffForm({ ...staffForm, name: e.target.value })} className={inputCls + " w-40"} />
+            <input placeholder="職稱" value={staffForm.title} onChange={(e) => setStaffForm({ ...staffForm, title: e.target.value })} className={inputCls + " w-24"} />
             <button onClick={addStaff} className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm rounded-lg">＋ 單筆新增</button>
           </div>
           <div className="table-scroll">
             <table className="w-full text-sm">
               <thead>
-                <tr className="text-left text-slate-500 border-b"><th className="py-2 pr-4">員編</th><th className="py-2 pr-4">姓名</th><th className="py-2 pr-4">操作</th></tr>
+                <tr className="text-left text-slate-500 border-b"><th className="py-2 pr-4">部別</th><th className="py-2 pr-4">課別</th><th className="py-2 pr-4">工號</th><th className="py-2 pr-4">姓名</th><th className="py-2 pr-4">職稱</th><th className="py-2 pr-4">操作</th></tr>
                 <tr className="border-b">
+                  <th className="py-1 pr-4"><FilterInput value={pFilters.div} onChange={(v) => setPF("div", v)} /></th>
+                  <th className="py-1 pr-4"><FilterInput value={pFilters.dept} onChange={(v) => setPF("dept", v)} /></th>
                   <th className="py-1 pr-4"><FilterInput value={pFilters.empNo} onChange={(v) => setPF("empNo", v)} /></th>
                   <th className="py-1 pr-4"><FilterInput value={pFilters.name} onChange={(v) => setPF("name", v)} /></th>
+                  <th className="py-1 pr-4"><FilterInput value={pFilters.title} onChange={(v) => setPF("title", v)} /></th>
                   <th></th>
                 </tr>
               </thead>
               <tbody>
                 {staff.map((p) => (
                   <tr key={p.id} className="border-b last:border-0">
-                    <td className="py-2 pr-4 font-mono">{p.empNo}</td><td className="py-2 pr-4">{p.name}</td>
+                    <td className="py-2 pr-4">{p.div || "—"}</td><td className="py-2 pr-4">{p.dept || "—"}</td><td className="py-2 pr-4 font-mono">{p.empNo}</td><td className="py-2 pr-4">{p.name}</td><td className="py-2 pr-4">{p.title || "—"}</td>
                     <td className="py-2 pr-4"><button onClick={() => removeStaff(p.id)} className="text-red-500 hover:underline">刪除</button></td>
                   </tr>
                 ))}
-                {staff.length === 0 && <tr><td colSpan="3" className="py-6 text-center text-slate-400">查無盤點人員，請匯入或新增</td></tr>}
+                {staff.length === 0 && <tr><td colSpan="6" className="py-6 text-center text-slate-400">查無盤點人員，請匯入或新增</td></tr>}
               </tbody>
             </table>
           </div>
@@ -1220,38 +1254,46 @@ function MaintainZone({ db, setDB, month, setMonth, toast }) {
         </div>
       )}
 
-      {/* 單價設定 */}
-      {tab === "prices" && (
-        <div className="mt-4 fade-in">
-          <p className="text-sm text-slate-500 mb-3">依品牌 / 店鋪別設定計價方式與單價，數據分析區將依此計算請款金額。</p>
-          <div className="table-scroll">
-            <table className="w-full text-sm">
-              <thead><tr className="text-left text-slate-500 border-b"><th className="py-2 pr-4">店鋪</th><th className="py-2 pr-4">計價方式</th><th className="py-2 pr-4">單價（元）</th></tr></thead>
-              <tbody>
-                {stores.map((s) => {
-                  const p = db.prices.find((x) => x.storeId === s.id) || { priceType: "piece", unitPrice: "" };
-                  return (
-                    <tr key={s.id} className="border-b last:border-0">
-                      <td className="py-2 pr-4">{s.code} {s.name}</td>
-                      <td className="py-2 pr-4">
-                        <select value={p.priceType} onChange={(e) => setPrice(s.id, { priceType: e.target.value })} className={inputCls + " bg-white"}>
-                          <option value="piece">依件數（元/件）</option>
-                          <option value="hour">依人時（元/人時）</option>
-                        </select>
-                      </td>
-                      <td className="py-2 pr-4">
-                        <input type="number" min="0" step="0.01" value={p.unitPrice}
-                          onChange={(e) => setPrice(s.id, { unitPrice: Number(e.target.value) })} className={inputCls + " w-32"} />
-                      </td>
-                    </tr>
-                  );
-                })}
-                {stores.length === 0 && <tr><td colSpan="3" className="py-6 text-center text-slate-400">此品牌本月尚無店鋪</td></tr>}
-              </tbody>
-            </table>
+      {/* 單價設定（一個品牌一個價，不分店鋪） */}
+      {tab === "prices" && (() => {
+        const brandObj = db.brands.find((b) => b.id === brandId);
+        const bp = db.prices.find((x) => x.brandId === brandId) || { priceType: "piece", unitPrice: "" };
+        const showFees = brandObj && brandObj.name === "英斯伯"; // 英斯伯專屬加收項
+        return (
+          <div className="mt-4 fade-in space-y-4">
+            <p className="text-sm text-slate-500">「{brandObj ? brandObj.name : ""}」的請款單價（一個品牌一個價，不分店鋪）。</p>
+            <div className="flex flex-wrap gap-4 items-end">
+              <div>
+                <label className="block text-xs text-slate-500 mb-1">計價方式</label>
+                <select value={bp.priceType} onChange={(e) => setPrice(brandId, { priceType: e.target.value })} className={inputCls + " bg-white"}>
+                  <option value="piece">依件數（元/件）</option>
+                  <option value="hour">依人時（元/人時）</option>
+                </select>
+              </div>
+              <div>
+                <label className="block text-xs text-slate-500 mb-1">單價（元）</label>
+                <input type="number" min="0" step="0.01" value={bp.unitPrice}
+                  onChange={(e) => setPrice(brandId, { unitPrice: Number(e.target.value) })} className={inputCls + " w-32"} />
+              </div>
+              {showFees && (
+                <>
+                  <div>
+                    <label className="block text-xs text-slate-500 mb-1">文件處理費（元/場）</label>
+                    <input type="number" min="0" step="1" value={bp.docFee == null ? "" : bp.docFee}
+                      onChange={(e) => setPrice(brandId, { docFee: Number(e.target.value) })} className={inputCls + " w-32"} />
+                  </div>
+                  <div>
+                    <label className="block text-xs text-slate-500 mb-1">超時費（元/場）</label>
+                    <input type="number" min="0" step="1" value={bp.otFee == null ? "" : bp.otFee}
+                      onChange={(e) => setPrice(brandId, { otFee: Number(e.target.value) })} className={inputCls + " w-32"} />
+                  </div>
+                </>
+              )}
+            </div>
+            {showFees && <p className="text-xs text-slate-400">文件處理費、超時費為英斯伯專屬，預設每場（每筆盤點紀錄）加收；如計算方式不同再告知調整。</p>}
           </div>
-        </div>
-      )}
+        );
+      })()}
 
       {/* 品牌管理（保留新增品牌功能） */}
       {tab === "brands" && (
