@@ -23,9 +23,9 @@ const seedDB = {
     { id: "B03", name: "歐都納" },
   ],
   stores: [
-    { id: "S001", brandId: "B01", month: CURRENT_MONTH, code: "AS-001", name: "微風本館 JV", dept: "北一課", category: "JV", enName: "JV BREEZE MAIN", warehouse: "" },
-    { id: "S002", brandId: "B01", month: CURRENT_MONTH, code: "AS-002", name: "微風南山 JV", dept: "北一課", category: "JV", enName: "JV BREEZE NANSHAN", warehouse: "" },
-    { id: "S003", brandId: "B01", month: CURRENT_MONTH, code: "AS-003", name: "桃園統領 JV", dept: "中區課", category: "JV", enName: "JV GLORIA TAOYUAN", warehouse: "" },
+    { id: "S001", brandId: "B01", month: CURRENT_MONTH, code: "AS-001", name: "微風本館 JV", div: "一部", dept: "北一課", category: "JV", enName: "JV BREEZE MAIN", warehouse: "1" },
+    { id: "S002", brandId: "B01", month: CURRENT_MONTH, code: "AS-002", name: "微風南山 JV", div: "一部", dept: "北一課", category: "JV", enName: "JV BREEZE NANSHAN", warehouse: "1" },
+    { id: "S003", brandId: "B01", month: CURRENT_MONTH, code: "AS-003", name: "桃園統領 JV", div: "二部", dept: "中區課", category: "JV", enName: "JV GLORIA TAOYUAN", warehouse: "1" },
     { id: "S004", brandId: "B02", month: CURRENT_MONTH, code: "IB-001", name: "英斯伯-信義店", dept: "北一課" },
     { id: "S005", brandId: "B02", month: CURRENT_MONTH, code: "IB-002", name: "英斯伯-板橋店", dept: "北二課" },
     { id: "S006", brandId: "B03", month: CURRENT_MONTH, code: "AT-001", name: "歐都納-南港店", dept: "北一課" },
@@ -40,7 +40,7 @@ const seedDB = {
   // 單價設定：一個品牌一個價。priceType = "piece"（依件數）或 "hour"（依人時）
   // 英斯伯(B02)另有 docFee(文件處理費)、otFee(超時費)，每場加收
   prices: [
-    { brandId: "B01", priceType: "piece", unitPrice: 0.5 },
+    { brandId: "B01", priceType: "piece", unitPrice: 2.2, minCharge: 5000, whFee: 500 },
     { brandId: "B02", priceType: "hour", unitPrice: 320, docFee: 500, otFee: 200 },
     { brandId: "B03", priceType: "piece", unitPrice: 0.6 },
   ],
@@ -133,7 +133,7 @@ function wsFromMatrix(matrix) {
   const ws = {}; let maxC = 0;
   matrix.forEach((row, r) => row.forEach((cell, c) => {
     const a = XLSX.utils.encode_cell({ r, c });
-    if (cell && typeof cell === "object" && "f" in cell) ws[a] = { t: "n", f: cell.f, v: (cell.v == null ? 0 : cell.v) };
+    if (cell && typeof cell === "object" && "f" in cell) ws[a] = { t: cell.t || "n", f: cell.f, v: (cell.v == null ? 0 : cell.v) };
     else if (typeof cell === "number") ws[a] = { t: "n", v: cell };
     else ws[a] = { t: "s", v: cell == null ? "" : String(cell) };
     if (c > maxC) maxC = c;
@@ -940,6 +940,8 @@ function AnalysisZone({ db, month, setMonth, toast }) {
   const [brandId, setBrandId] = useState("");
   const [filters, setFilters] = useState({});
   const setF = (k, v) => setFilters((p) => ({ ...p, [k]: v }));
+  const selBrand = db.brands.find((b) => b.id === brandId);
+  const osheng = isOshengBrand(selBrand);
 
   const rows = useMemo(() => {
     return db.records
@@ -964,7 +966,7 @@ function AnalysisZone({ db, month, setMonth, toast }) {
         const docFee = price ? num(price.docFee) : 0;   // 英斯伯：每場文件處理費
         const otFee = price ? num(price.otFee) : 0;     // 英斯伯：每場超時費
         const amount = base + docFee + otFee;
-        return { ...r, pieces, headcount, storeName: store?.name || r.storeId, storeCode: store?.code || "", dept: store?.dept || "", brandName: brand?.name, countHrs, countMin, manHours, diffHrs, efficiency, base, docFee, otFee, amount, priceDesc };
+        return { ...r, pieces, headcount, storeName: store?.name || r.storeId, storeCode: store?.code || "", div: store?.div || "", dept: store?.dept || "", warehouse: num(store?.warehouse) || 1, brandName: brand?.name, countHrs, countMin, manHours, diffHrs, efficiency, base, docFee, otFee, amount, priceDesc };
       });
   }, [db, month, brandId]);
 
@@ -973,9 +975,72 @@ function AnalysisZone({ db, month, setMonth, toast }) {
     pieces: a.pieces + r.pieces, manHours: a.manHours + r.manHours, base: a.base + r.base, docFee: a.docFee + r.docFee, otFee: a.otFee + r.otFee, amount: a.amount + r.amount,
   }), { pieces: 0, manHours: 0, base: 0, docFee: 0, otFee: 0, amount: 0 });
 
-  // 匯出請款資料（件數×單價；英斯伯另加文件處理費/超時費）
+  // 歐聖請款：依範本 3 分頁（彙總/客戶/內部），保留公式
+  const exportBillingOsheng = () => {
+    const p = db.prices.find((x) => x.brandId === brandId) || {};
+    const unit = num(p.unitPrice) || 2.2, minC = num(p.minCharge) || 5000, whF = num(p.whFee) || 500;
+    const minPieces = Math.ceil(minC / unit); // 低於此件數 → 最低收費
+    const md = (d) => { const s = String(d).split("-"); return s.length === 3 ? `${+s[1]}/${+s[2]}` : d; };
+    const gVal = (r) => Math.round(Math.max(r.pieces * unit, minC) + (num(r.warehouse) - 1) * whF);
+    const wb = XLSX.utils.book_new();
+
+    // 分頁一：彙總（含部別/主責課分攤；協盤課留空）
+    const H = ["盤點日期", "店點代號", "店櫃", "實盤件數", "總倉別", "倉別加計費用", "請款金額", "備註", "部別", "主責課", "人數", "金額", "協盤課", "人數", "金額", "協盤課", "人數", "金額", "協盤課", "人數", "金額", "總計"];
+    const M = [H];
+    viewRows.forEach((r, i) => {
+      const R = i + 2, wh = num(r.warehouse) || 1, g = gVal(r);
+      M.push([md(r.date), r.storeCode, r.storeName, r.pieces, wh,
+        { f: `(E${R}-1)*${whF}`, v: (wh - 1) * whF },
+        { f: `ROUND((IF((D${R}*${unit})<${minC},${minC},(D${R}*${unit}))+F${R}),0)`, v: g },
+        { t: "str", f: `IF(D${R}<${minPieces},"最低收費","")`, v: r.pieces < minPieces ? "最低收費" : "" },
+        r.div, r.dept, r.headcount,
+        { f: `ROUND((K${R}/($K${R}+$N${R}+$Q${R}+$T${R})*$G${R}),0)`, v: g },
+        "", "", { f: `IF($K${R}+$N${R}+$Q${R}+$T${R}=0,0,ROUND((N${R}/($K${R}+$N${R}+$Q${R}+$T${R})*$G${R}),0))`, v: 0 },
+        "", "", { f: `IF($K${R}+$N${R}+$Q${R}+$T${R}=0,0,ROUND((Q${R}/($K${R}+$N${R}+$Q${R}+$T${R})*$G${R}),0))`, v: 0 },
+        "", "", { f: `IF($K${R}+$N${R}+$Q${R}+$T${R}=0,0,ROUND((T${R}/($K${R}+$N${R}+$Q${R}+$T${R})*$G${R}),0))`, v: 0 },
+        { f: `ROUND(L${R}+O${R}+R${R}+U${R},0)`, v: g }]);
+    });
+    XLSX.utils.book_append_sheet(wb, wsFromMatrix(M), "請款明細(彙總)");
+
+    // 分頁二：客戶（A–H）
+    const HC = ["盤點日期", "店點代號", "店櫃", "實盤件數", "總倉別", "倉別加計費用", "請款金額", "備註"];
+    const MC = [HC];
+    viewRows.forEach((r, i) => {
+      const R = i + 2, wh = num(r.warehouse) || 1, g = gVal(r);
+      MC.push([md(r.date), r.storeCode, r.storeName, r.pieces, wh,
+        { f: `(E${R}-1)*${whF}`, v: (wh - 1) * whF },
+        { f: `ROUND((IF((D${R}*${unit})<${minC},${minC},(D${R}*${unit}))+F${R}),0)`, v: g },
+        { t: "str", f: `IF(D${R}<${minPieces},"最低收費","")`, v: r.pieces < minPieces ? "最低收費" : "" }]);
+    });
+    XLSX.utils.book_append_sheet(wb, wsFromMatrix(MC), "請款明細(客戶)");
+
+    // 分頁三：內部（依主責課彙總，COUNTIF/SUMIF 參照彙總分頁 + 5% 稅）
+    const depts = Array.from(new Set(viewRows.map((r) => r.dept).filter(Boolean)));
+    const cntOf = (d) => viewRows.filter((r) => r.dept === d).length;
+    const sumOf = (d) => viewRows.filter((r) => r.dept === d).reduce((a, r) => a + gVal(r), 0);
+    const grand = viewRows.reduce((a, r) => a + gVal(r), 0);
+    const MI = [["主責課", "家數", "請款金額"]];
+    depts.forEach((d, i) => {
+      const R = i + 2;
+      MI.push([d,
+        { f: `COUNTIF('請款明細(彙總)'!$J:$J,A${R})`, v: cntOf(d) },
+        { f: `SUMIF('請款明細(彙總)'!$J:$J,A${R},'請款明細(彙總)'!$L:$L)`, v: sumOf(d) }]);
+    });
+    const tR = depts.length + 2;
+    MI.push(["總計", { f: `SUM(B2:B${tR - 1})`, v: viewRows.length }, { f: `SUM(C2:C${tR - 1})`, v: grand }]);
+    MI.push(["5% 稅金", "", { f: `ROUND(C${tR}*0.05,0)`, v: Math.round(grand * 0.05) }]);
+    MI.push(["含稅總計", "", { f: `C${tR}+C${tR + 1}`, v: grand + Math.round(grand * 0.05) }]);
+    XLSX.utils.book_append_sheet(wb, wsFromMatrix(MI), "請款明細(內部)");
+
+    XLSX.writeFile(wb, `歐聖發票明細${month}-彙總.xlsx`);
+    toast("歐聖請款（3 分頁、含公式）已匯出 ✔");
+  };
+
+  // 匯出請款資料
   const exportBilling = () => {
     if (viewRows.length === 0) { toast("目前沒有可匯出的資料"); return; }
+    if (osheng) { exportBillingOsheng(); return; }
+    // 其他品牌：件數×單價（英斯伯另加文件處理費/超時費）
     exportXLSX(`請款資料_${month}.xlsx`, `請款資料_${month}`, [
       ["品牌", "店鋪", "主責課", "盤點日期", "實盤件數", "盤點人數", "計價方式", "作業費", "文件處理費", "超時費", "請款金額"],
       ...viewRows.map((r) => [r.brandName, r.storeName, r.dept, r.date, r.pieces, r.headcount, r.priceDesc, r.base, r.docFee, r.otFee, r.amount]),
@@ -1157,15 +1222,16 @@ function MaintainZone({ db, setDB, month, setMonth, toast }) {
       if (kind === "stores") {
         const hCode = findH(/店鋪代碼|店點代號|代號|代碼|code/i);
         const hName = headers.find((h) => /店鋪名稱|店名|名稱|name/i.test(String(h)) && !/英文/.test(String(h)));
+        const hDiv = findH(/主責部|部別/i);
         const hDept = findH(/主責課|課別|dept/i);
         const hCat = findH(/主檔類別|店鋪種類|類別|種類|category/i);
         const hEn = findH(/英文/i) || findH(/enName/i);
         const hWh = findH(/倉別/i);
         const hAudit = findH(/盤點日期|日期|date/i);
         const get = (r, h) => h ? String(r[h] == null ? "" : r[h]).trim() : "";
-        const items = rows.map((r) => ({ code: get(r, hCode), name: get(r, hName), dept: get(r, hDept), category: get(r, hCat), enName: get(r, hEn), warehouse: get(r, hWh), auditDate: get(r, hAudit) }))
+        const items = rows.map((r) => ({ code: get(r, hCode), name: get(r, hName), div: get(r, hDiv), dept: get(r, hDept), category: get(r, hCat), enName: get(r, hEn), warehouse: get(r, hWh), auditDate: get(r, hAudit) }))
           .filter((x) => x.code || x.name)
-          .map((x) => ({ id: uid("S"), brandId, month, code: x.code || x.name, name: x.name || x.code, dept: x.dept, category: x.category, enName: x.enName, warehouse: x.warehouse, auditDate: x.auditDate, srcFile: f.name }));
+          .map((x) => ({ id: uid("S"), brandId, month, code: x.code || x.name, name: x.name || x.code, div: x.div, dept: x.dept, category: x.category, enName: x.enName, warehouse: x.warehouse, auditDate: x.auditDate, srcFile: f.name }));
         if (items.length === 0) { toast("未讀到有效店鋪資料，請確認欄位（店鋪代碼/店名）"); e.target.value = ""; return; }
         // 同檔名重匯：先清掉上次此檔匯入的店鋪（本品牌本月），保留手動新增與其他檔匯入
         const prior = db.stores.filter((s) => s.srcFile === f.name && s.brandId === brandId && s.month === month).length;
@@ -1344,6 +1410,7 @@ function MaintainZone({ db, setDB, month, setMonth, toast }) {
         const brandObj = db.brands.find((b) => b.id === brandId);
         const bp = db.prices.find((x) => x.brandId === brandId) || { priceType: "piece", unitPrice: "" };
         const showFees = brandObj && brandObj.name === "英斯伯"; // 英斯伯專屬加收項
+        const showOsheng = brandObj && brandObj.name === "歐聖"; // 歐聖：最低收費 + 倉別加計
         return (
           <div className="mt-4 fade-in space-y-4">
             <p className="text-sm text-slate-500">「{brandObj ? brandObj.name : ""}」的請款單價（一個品牌一個價，不分店鋪）。</p>
@@ -1360,6 +1427,20 @@ function MaintainZone({ db, setDB, month, setMonth, toast }) {
                 <input type="number" min="0" step="0.01" value={bp.unitPrice}
                   onChange={(e) => setPrice(brandId, { unitPrice: Number(e.target.value) })} className={inputCls + " w-32"} />
               </div>
+              {showOsheng && (
+                <>
+                  <div>
+                    <label className="block text-xs text-slate-500 mb-1">最低收費（元/店）</label>
+                    <input type="number" min="0" step="1" value={bp.minCharge == null ? "" : bp.minCharge}
+                      onChange={(e) => setPrice(brandId, { minCharge: Number(e.target.value) })} className={inputCls + " w-32"} />
+                  </div>
+                  <div>
+                    <label className="block text-xs text-slate-500 mb-1">倉別加計（元/倉）</label>
+                    <input type="number" min="0" step="1" value={bp.whFee == null ? "" : bp.whFee}
+                      onChange={(e) => setPrice(brandId, { whFee: Number(e.target.value) })} className={inputCls + " w-32"} />
+                  </div>
+                </>
+              )}
               {showFees && (
                 <>
                   <div>
@@ -1375,6 +1456,7 @@ function MaintainZone({ db, setDB, month, setMonth, toast }) {
                 </>
               )}
             </div>
+            {showOsheng && <p className="text-xs text-slate-400">歐聖請款＝MAX(實盤件數×單價, 最低收費)＋(總倉別-1)×倉別加計；件數不足最低收費者標記「最低收費」。</p>}
             {showFees && <p className="text-xs text-slate-400">文件處理費、超時費為英斯伯專屬，預設每場（每筆盤點紀錄）加收；如計算方式不同再告知調整。</p>}
           </div>
         );
