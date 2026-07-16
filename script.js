@@ -243,6 +243,15 @@ function sortStoresByName(arr) {
   return [...arr].sort((a, b) => String(a.name).localeCompare(String(b.name), "zh-Hant"));
 }
 
+// 依盤點日期→店號排序（主檔下載區使用）
+function sortStoresByDateCode(arr) {
+  return [...arr].sort((a, b) => {
+    const d = String(a.auditDate || "").localeCompare(String(b.auditDate || ""));
+    if (d !== 0) return d;
+    return String(a.code || "").localeCompare(String(b.code || ""));
+  });
+}
+
 function Toast({ msg }) {
   if (!msg) return null;
   return (
@@ -302,7 +311,7 @@ function DownloadZone({ db, month, setMonth, toast }) {
   const baseStores = db.stores
     .filter((s) => s.brandId === brandId && s.month === month)
     .map((s) => ({ ...s, masterStatus: has(masterKey(s), "master") ? "可下載" : "尚未產製", stockStatus: has(s.id, "stock") ? "可下載" : "尚未產製" }));
-  const stores = sortStoresByName(baseStores.filter((s) => matchFilters(s, filters)));
+  const stores = sortStoresByDateCode(baseStores.filter((s) => matchFilters(s, filters)));
 
   // 下載：輸出上傳時已重建好的標準格式（全部文字）；主檔取店鋪種類、庫存檔取單店
   const download = async (store, type) => {
@@ -361,6 +370,7 @@ function DownloadZone({ db, month, setMonth, toast }) {
           <table className="w-full text-sm">
             <thead>
               <tr className="text-left text-slate-500 border-b">
+                <th className="py-2 pr-4">盤點日期</th>
                 <th className="py-2 pr-4">店鋪代碼</th>
                 <th className="py-2 pr-4">店鋪名稱</th>
                 <th className="py-2 pr-4">主責課</th>
@@ -369,6 +379,7 @@ function DownloadZone({ db, month, setMonth, toast }) {
                 <th className="py-2 pr-4">庫存檔</th>
               </tr>
               <tr className="border-b">
+                <th className="py-1 pr-4"><FilterSelect value={filters.auditDate} onChange={(v) => setF("auditDate", v)} options={distinctVals(baseStores, "auditDate")} /></th>
                 <th className="py-1 pr-4"><FilterSelect value={filters.code} onChange={(v) => setF("code", v)} options={distinctVals(baseStores, "code")} /></th>
                 <th className="py-1 pr-4"><FilterSelect value={filters.name} onChange={(v) => setF("name", v)} options={distinctVals(baseStores, "name")} /></th>
                 <th className="py-1 pr-4"><FilterSelect value={filters.dept} onChange={(v) => setF("dept", v)} options={distinctDepts(baseStores, "dept")} /></th>
@@ -380,6 +391,7 @@ function DownloadZone({ db, month, setMonth, toast }) {
             <tbody>
               {stores.map((s) => (
                 <tr key={s.id} className="border-b last:border-0">
+                  <td className="py-3 pr-4">{s.auditDate || "—"}</td>
                   <td className="py-3 pr-4 font-mono">{s.code}</td>
                   <td className="py-3 pr-4">{s.name}</td>
                   <td className="py-3 pr-4">{s.dept || "—"}</td>
@@ -389,7 +401,7 @@ function DownloadZone({ db, month, setMonth, toast }) {
                 </tr>
               ))}
               {stores.length === 0 && (
-                <tr><td colSpan="6" className="py-6 text-center text-slate-400">查無符合條件的店鋪</td></tr>
+                <tr><td colSpan="7" className="py-6 text-center text-slate-400">查無符合條件的店鋪</td></tr>
               )}
             </tbody>
           </table>
@@ -1327,6 +1339,13 @@ function MaintainZone({ db, setDB, month, setMonth, toast }) {
 
   const removeStore = (id) => setDB((d) => ({ ...d, stores: d.stores.filter((s) => s.id !== id) }));
   const removeStaff = (id) => setDB((d) => ({ ...d, staff: d.staff.filter((p) => p.id !== id) }));
+  // 清除本品牌本月的整份店鋪名單（例如名單匯錯要整批重來）
+  const clearStores = () => {
+    if (stores.length === 0) { toast("此品牌本月尚無店鋪名單"); return; }
+    if (!confirm(`確定要清除「${db.brands.find((b) => b.id === brandId)?.name || ""}」${month} 的整份店鋪名單（共 ${stores.length} 筆）嗎？`)) return;
+    setDB((d) => ({ ...d, stores: d.stores.filter((s) => !(s.brandId === brandId && s.month === month)) }));
+    toast("已清除本月店鋪名單 ✔");
+  };
 
   // 單價以品牌為單位
   const setPrice = (bId, patch) => {
@@ -1394,6 +1413,7 @@ function MaintainZone({ db, setDB, month, setMonth, toast }) {
             <input placeholder="倉別量" value={storeForm.warehouse} onChange={(e) => setStoreForm({ ...storeForm, warehouse: e.target.value })} className={inputCls + " w-20"} />
             <input placeholder="盤點日期" value={storeForm.auditDate} onChange={(e) => setStoreForm({ ...storeForm, auditDate: e.target.value })} className={inputCls + " w-28"} />
             <button onClick={addStore} className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm rounded-lg">＋ 單筆新增</button>
+            <button onClick={clearStores} className="px-4 py-2 border border-red-400 text-red-500 hover:bg-red-50 text-sm rounded-lg">🗑 清除本月名單</button>
           </div>
           <div className="table-scroll">
             <table className="w-full text-sm">
