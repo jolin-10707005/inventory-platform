@@ -238,6 +238,11 @@ function distinctVals(rows, key) {
   return Array.from(new Set(rows.map((r) => String(r[key] == null ? "" : r[key])).filter((v) => v !== ""))).sort();
 }
 
+// 依店名排序：分倉命名為「主店名_倉別」，字串排序會讓主店與分倉自然相鄰
+function sortStoresByName(arr) {
+  return [...arr].sort((a, b) => String(a.name).localeCompare(String(b.name), "zh-Hant"));
+}
+
 function Toast({ msg }) {
   if (!msg) return null;
   return (
@@ -297,7 +302,7 @@ function DownloadZone({ db, month, setMonth, toast }) {
   const baseStores = db.stores
     .filter((s) => s.brandId === brandId && s.month === month)
     .map((s) => ({ ...s, masterStatus: has(masterKey(s), "master") ? "可下載" : "尚未產製", stockStatus: has(s.id, "stock") ? "可下載" : "尚未產製" }));
-  const stores = baseStores.filter((s) => matchFilters(s, filters));
+  const stores = sortStoresByName(baseStores.filter((s) => matchFilters(s, filters)));
 
   // 下載：輸出上傳時已重建好的標準格式（全部文字）；主檔取店鋪種類、庫存檔取單店
   const download = async (store, type) => {
@@ -634,7 +639,7 @@ function UploadZone({ db, setDB, month, toast, brandId }) {
   const [colStore, setColStore] = useState({});        // 歐聖：客戶檔店名欄 → storeId（自動比對＋手動調整）
   const [busy, setBusy] = useState(false);
   const isStock = fileType === "stock";
-  const stores = db.stores.filter((s) => s.brandId === brandId && s.month === month);
+  const stores = sortStoresByName(db.stores.filter((s) => s.brandId === brandId && s.month === month));
   const brand = db.brands.find((b) => b.id === brandId);
   const aliases = db.aliases || [];
 
@@ -819,6 +824,28 @@ function UploadZone({ db, setDB, month, toast, brandId }) {
   const history = db.uploads.filter((u) => u.month === month);
   const sel = "px-3 py-2 border border-slate-300 rounded-lg text-sm bg-white focus:ring-2 focus:ring-blue-500 outline-none";
 
+  // 清除一筆錯誤上傳：刪除該檔已產製的主檔/庫存檔，並移除上傳紀錄
+  const [removing, setRemoving] = useState("");
+  const removeUpload = async (u) => {
+    if (!confirm(`確定要刪除「${u.fileName}」這筆上傳，以及它已產製的主檔／庫存檔嗎？`)) return;
+    setRemoving(u.id);
+    try {
+      await InventoryAPI.deleteMastersByFile(u.fileName, u.month);
+      const next = {
+        ...db,
+        uploads: db.uploads.filter((x) => x.id !== u.id),
+        mastersIndex: (db.mastersIndex || []).filter((m) => !(m.srcFile === u.fileName && m.month === u.month)),
+      };
+      setDB(next);
+      await InventoryAPI.saveTabs(next, ["uploads"]);
+      toast("已刪除該筆上傳與其產製資料 ✔");
+    } catch (e) {
+      toast("刪除失敗，請確認網路後再試");
+    } finally {
+      setRemoving("");
+    }
+  };
+
   return (
     <div className="space-y-6">
       <SectionCard title="📤 上傳客戶主檔" subtitle="盤點前的檔案做主檔（數量帶0）、盤點當日的檔案做庫存檔（帶客戶數量）；兩者皆用客戶檔完整重建為標準格式">
@@ -930,7 +957,7 @@ function UploadZone({ db, setDB, month, toast, brandId }) {
             <thead>
               <tr className="text-left text-slate-500 border-b">
                 <th className="py-2 pr-4">上傳日期</th><th className="py-2 pr-4">品牌</th><th className="py-2 pr-4">用途</th>
-                <th className="py-2 pr-4">檔案名稱</th><th className="py-2 pr-4">產製店鋪數</th><th className="py-2 pr-4">資料筆數</th>
+                <th className="py-2 pr-4">檔案名稱</th><th className="py-2 pr-4">產製店鋪數</th><th className="py-2 pr-4">資料筆數</th><th className="py-2 pr-4">操作</th>
               </tr>
             </thead>
             <tbody>
@@ -942,9 +969,15 @@ function UploadZone({ db, setDB, month, toast, brandId }) {
                   <td className="py-2 pr-4 font-mono">{u.fileName}</td>
                   <td className="py-2 pr-4">{u.storeCount}</td>
                   <td className="py-2 pr-4">{u.rowCount != null ? num(u.rowCount).toLocaleString() : "—"}</td>
+                  <td className="py-2 pr-4">
+                    <button onClick={() => removeUpload(u)} disabled={removing === u.id}
+                      className="text-red-500 hover:underline disabled:text-slate-400">
+                      {removing === u.id ? "刪除中…" : "清除"}
+                    </button>
+                  </td>
                 </tr>
               ))}
-              {history.length === 0 && <tr><td colSpan="6" className="py-6 text-center text-slate-400">本月尚無上傳紀錄</td></tr>}
+              {history.length === 0 && <tr><td colSpan="7" className="py-6 text-center text-slate-400">本月尚無上傳紀錄</td></tr>}
             </tbody>
           </table>
         </div>
@@ -1205,7 +1238,7 @@ function MaintainZone({ db, setDB, month, setMonth, toast }) {
 
   const baseStores = db.stores.filter((s) => s.brandId === brandId && s.month === month);
   const baseStaff = db.staff.filter((p) => p.brandId === brandId && p.month === month);
-  const stores = baseStores.filter((s) => matchFilters(s, sFilters));
+  const stores = sortStoresByName(baseStores.filter((s) => matchFilters(s, sFilters)));
   const staff = baseStaff.filter((p) => matchFilters(p, pFilters));
 
   // TODO: IT 工程師請在此串接後端 API 邏輯（POST /api/brands）
