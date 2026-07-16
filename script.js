@@ -63,13 +63,14 @@ const seedDB = {
   ],
   uploads: [], // 上傳區：客戶主檔上傳紀錄
   aliases: [], // 店名對應記憶：{ brandId, key(正規化欄標題), storeId }
+  manuals: [], // 盤點手冊：{ brandId, fileName, fileUrl, uploadedAt }（一品牌一份，不分店鋪種類）
 };
 
 /* ---------------- 資料存取（透過 api.js 抽象層） ----------------
  * 維護類資料（單一管理者編輯）→ 整表覆蓋（ADMIN_TABS）
  * 盤點/上傳紀錄（多裝置同時新增）→ 逐筆 append，避免互相覆蓋
  */
-const ADMIN_TABS = ["brands", "stores", "staff", "prices", "aliases"];
+const ADMIN_TABS = ["brands", "stores", "staff", "prices", "aliases", "manuals"];
 const ALL_TABS = [...ADMIN_TABS, "records", "uploads"];
 function seed() { return JSON.parse(JSON.stringify(seedDB)); }
 
@@ -331,17 +332,24 @@ function DownloadZone({ db, month, setMonth, toast }) {
           className="px-3 py-2 border border-slate-300 rounded-lg text-sm bg-white focus:ring-2 focus:ring-blue-500 outline-none" />
       </div>
 
-      {brand && (
-        <div className="mt-4 flex items-center gap-3 bg-blue-50 border border-blue-200 rounded-xl px-4 py-3">
-          <span className="text-2xl">📘</span>
-          <div className="flex-1">
-            <div className="font-medium text-slate-800">{brand.name} 盤點手冊</div>
-            <div className="text-xs text-slate-500">品牌通用作業手冊（PDF）{osheng && "；歐聖主檔以店鋪種類提供（同種類共用一份）"}</div>
+      {brand && (() => {
+        const manual = (db.manuals || []).find((m) => m.brandId === brandId);
+        return (
+          <div className="mt-4 flex items-center gap-3 bg-blue-50 border border-blue-200 rounded-xl px-4 py-3">
+            <span className="text-2xl">📘</span>
+            <div className="flex-1">
+              <div className="font-medium text-slate-800">{brand.name} 盤點手冊</div>
+              <div className="text-xs text-slate-500">
+                {manual ? `品牌通用作業手冊（PDF）・上傳日期 ${manual.uploadedAt}` : "尚未上傳手冊，請至維護區上傳"}
+              </div>
+            </div>
+            {manual
+              ? <a href={manual.fileUrl} target="_blank" rel="noreferrer"
+                  className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm rounded-lg">下載手冊</a>
+              : <button disabled className="px-4 py-2 bg-slate-300 text-white text-sm rounded-lg cursor-not-allowed">尚未上傳</button>}
           </div>
-          <button onClick={() => toast(`已下載 ${brand.name} 盤點手冊（原型模擬）`)}
-            className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm rounded-lg">下載手冊</button>
-        </div>
-      )}
+        );
+      })()}
 
       {brandId && (
         <div className="table-scroll mt-4">
@@ -1303,6 +1311,7 @@ function MaintainZone({ db, setDB, month, setMonth, toast }) {
     { id: "staff", label: "👥 盤點人員名單" },
     { id: "prices", label: "💰 單價設定" },
     { id: "upload", label: "📤 上傳主檔" },
+    { id: "manual", label: "📘 盤點手冊" },
     { id: "brands", label: "🏷 品牌管理" },
   ];
 
@@ -1432,6 +1441,50 @@ function MaintainZone({ db, setDB, month, setMonth, toast }) {
           <UploadZone db={db} setDB={setDB} month={month} toast={toast} brandId={brandId} />
         </div>
       )}
+
+      {/* 盤點手冊上傳（PDF，一品牌一份，不分店鋪種類） */}
+      {tab === "manual" && (() => {
+        const brandObj = db.brands.find((b) => b.id === brandId);
+        const manual = (db.manuals || []).find((m) => m.brandId === brandId);
+        const onManualFile = (e) => {
+          const f = e.target.files[0];
+          if (!f) return;
+          if (!/\.pdf$/i.test(f.name)) { toast("僅接受 PDF 檔"); e.target.value = ""; return; }
+          const reader = new FileReader();
+          reader.onload = async () => {
+            try {
+              const url = await InventoryAPI.uploadManual(reader.result, f.name);
+              const rec = { brandId, fileName: f.name, fileUrl: url, uploadedAt: new Date().toISOString().slice(0, 10) };
+              setDB((d) => ({ ...d, manuals: [...(d.manuals || []).filter((m) => m.brandId !== brandId), rec] }));
+              toast(`已上傳「${brandObj ? brandObj.name : ""}」盤點手冊 ✔`);
+            } catch (err) { toast("上傳失敗，請確認網路或稍後再試"); }
+          };
+          reader.readAsDataURL(f);
+          e.target.value = "";
+        };
+        return (
+          <div className="mt-4 space-y-4 fade-in">
+            <p className="text-sm text-slate-500">上傳「{brandObj ? brandObj.name : ""}」的盤點手冊（PDF）。一個品牌僅一份、不分店鋪種類；重新上傳將取代舊檔。</p>
+            <label className="inline-block px-4 py-2 bg-teal-600 hover:bg-teal-700 text-white text-sm rounded-lg cursor-pointer">
+              📤 上傳盤點手冊（PDF）
+              <input type="file" accept=".pdf" className="hidden" onChange={onManualFile} />
+            </label>
+            {manual
+              ? (
+                <div className="flex items-center gap-3 bg-blue-50 border border-blue-200 rounded-xl px-4 py-3">
+                  <span className="text-2xl">📘</span>
+                  <div className="flex-1">
+                    <div className="font-medium text-slate-800">{manual.fileName}</div>
+                    <div className="text-xs text-slate-500">上傳日期：{manual.uploadedAt}</div>
+                  </div>
+                  <a href={manual.fileUrl} target="_blank" rel="noreferrer"
+                    className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm rounded-lg">預覽</a>
+                </div>
+              )
+              : <p className="text-sm text-slate-400">尚未上傳手冊</p>}
+          </div>
+        );
+      })()}
 
       {/* 單價設定（一個品牌一個價，不分店鋪） */}
       {tab === "prices" && (() => {
