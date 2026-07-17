@@ -413,6 +413,120 @@ function DownloadZone({ db, month, setMonth, toast }) {
 }
 
 /* ============================================================
+ * 1b. 盤點總表上傳：盤點人員上傳實地盤點後的實盤數量表
+ *     比照主檔下載區（品牌+月份、店鋪列表含分倉、依盤點日期→店號排序）
+ *     每家店（含分倉）只保留最新一份，重新上傳覆蓋舊檔
+ * ============================================================ */
+function CountUploadZone({ db, setDB, month, setMonth, toast }) {
+  const [brandId, setBrandId] = useState("");
+  const [filters, setFilters] = useState({});
+  const setF = (k, v) => setFilters((p) => ({ ...p, [k]: v }));
+  const [busy, setBusy] = useState("");
+  const index = db.mastersIndex || [];
+  const brand = db.brands.find((b) => b.id === brandId);
+
+  const hasCount = (storeId) => index.some((m) => m.storeId === storeId && m.month === month && m.type === "count");
+
+  const baseStores = db.stores
+    .filter((s) => s.brandId === brandId && s.month === month)
+    .map((s) => ({ ...s, countStatus: hasCount(s.id) ? "已上傳" : "尚未上傳" }));
+  const stores = sortStoresByDateCode(baseStores.filter((s) => matchFilters(s, filters)));
+
+  // 上傳盤點總表：容錯常見欄名，轉存為標準 MASTER_COLS 格式（庫存數量＝實盤數量）
+  const onUpload = (store) => async (e) => {
+    const f = e.target.files[0];
+    if (!f) return;
+    if (!/\.(xlsx|xls)$/i.test(f.name)) { toast("僅接受 Excel 檔（.xlsx / .xls）"); e.target.value = ""; return; }
+    setBusy(store.id);
+    try {
+      const { headers, rows } = await readXLSX(f);
+      const findH2 = (re) => headers.find((h) => re.test(String(h)));
+      const hCode = findH2(/商品編號|貨號|品號|barcode|條碼|sku/i);
+      const hQty = findH2(/實盤|盤點數量|庫存數量|數量|qty/i);
+      if (!hCode || !hQty) { toast("找不到商品編號或數量欄位，請確認檔案格式"); return; }
+      const hName = findH2(/物品名稱|品名|名稱/i);
+      const hCost = findH2(/成本|單價|零售價/i);
+      const get = (r, h) => h ? String(r[h] == null ? "" : r[h]).trim() : "";
+      const stdRows = rows
+        .map((r) => ({ "商品編號": get(r, hCode), "barcode": get(r, hCode), "舊商品編號2": "", "物品名稱": get(r, hName), "庫存數量": get(r, hQty), "品項平均成本": get(r, hCost) }))
+        .filter((r) => r["商品編號"]);
+      if (stdRows.length === 0) { toast("檔案沒有可讀取的資料列"); return; }
+      for (const r of stdRows) { if (!isIntStr(r["庫存數量"])) { toast("數量欄須為整數，請確認檔案"); return; } }
+      await InventoryAPI.putMaster({ storeId: store.id, month, type: "count", srcFile: f.name, columns: MASTER_COLS, rows: stdRows });
+      const idx = (db.mastersIndex || []).filter((m) => !(m.storeId === store.id && m.month === month && m.type === "count"));
+      setDB({ ...db, mastersIndex: [...idx, { storeId: store.id, month, type: "count", srcFile: f.name }] });
+      toast(`已上傳「${store.name}」盤點總表（${stdRows.length} 筆）✔`);
+    } catch (err) {
+      toast("上傳失敗，請確認網路或檔案格式");
+    } finally {
+      setBusy("");
+      e.target.value = "";
+    }
+  };
+
+  return (
+    <SectionCard title="📋 盤點總表上傳" subtitle="盤點人員上傳實地盤點後的實盤數量表（Excel）；分倉各自獨立上傳，重新上傳會取代舊檔">
+      <div className="flex flex-wrap gap-3 items-center">
+        <BrandStoreSelect db={db} brandId={brandId} month={month} onBrand={setBrandId} showStore={false} />
+        <input type="month" value={month} onChange={(e) => setMonth(e.target.value)} title="盤點月份"
+          className="px-3 py-2 border border-slate-300 rounded-lg text-sm bg-white focus:ring-2 focus:ring-blue-500 outline-none" />
+      </div>
+
+      {brandId && (
+        <div className="table-scroll mt-4">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="text-left text-slate-500 border-b">
+                <th className="py-2 pr-4">盤點日期</th>
+                <th className="py-2 pr-4">店鋪代碼</th>
+                <th className="py-2 pr-4">店鋪名稱</th>
+                <th className="py-2 pr-4">主責課</th>
+                <th className="py-2 pr-4">店鋪種類</th>
+                <th className="py-2 pr-4">狀態</th>
+                <th className="py-2 pr-4">操作</th>
+              </tr>
+              <tr className="border-b">
+                <th className="py-1 pr-4"><FilterSelect value={filters.auditDate} onChange={(v) => setF("auditDate", v)} options={distinctVals(baseStores, "auditDate")} /></th>
+                <th className="py-1 pr-4"><FilterSelect value={filters.code} onChange={(v) => setF("code", v)} options={distinctVals(baseStores, "code")} /></th>
+                <th className="py-1 pr-4"><FilterSelect value={filters.name} onChange={(v) => setF("name", v)} options={distinctVals(baseStores, "name")} /></th>
+                <th className="py-1 pr-4"><FilterSelect value={filters.dept} onChange={(v) => setF("dept", v)} options={distinctDepts(baseStores, "dept")} /></th>
+                <th className="py-1 pr-4"><FilterSelect value={filters.category} onChange={(v) => setF("category", v)} options={distinctVals(baseStores, "category")} /></th>
+                <th className="py-1 pr-4"><FilterSelect value={filters.countStatus} onChange={(v) => setF("countStatus", v)} options={["已上傳", "尚未上傳"]} /></th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {stores.map((s) => (
+                <tr key={s.id} className="border-b last:border-0">
+                  <td className="py-3 pr-4">{s.auditDate || "—"}</td>
+                  <td className="py-3 pr-4 font-mono">{s.code}</td>
+                  <td className="py-3 pr-4">{s.name}</td>
+                  <td className="py-3 pr-4">{s.dept || "—"}</td>
+                  <td className="py-3 pr-4">{s.category || "—"}</td>
+                  <td className="py-3 pr-4">
+                    {s.countStatus === "已上傳" ? <span className="text-emerald-600">已上傳</span> : <span className="text-slate-400">尚未上傳</span>}
+                  </td>
+                  <td className="py-3 pr-4">
+                    <label className={"inline-block px-3 py-1.5 text-white text-sm rounded-lg cursor-pointer " + (busy === s.id ? "bg-slate-400" : "bg-blue-600 hover:bg-blue-700")}>
+                      {busy === s.id ? "上傳中…" : "⬆ 上傳"}
+                      <input type="file" accept=".xlsx,.xls" className="hidden" disabled={busy === s.id} onChange={onUpload(s)} />
+                    </label>
+                  </td>
+                </tr>
+              ))}
+              {stores.length === 0 && (
+                <tr><td colSpan="7" className="py-6 text-center text-slate-400">查無符合條件的店鋪</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      )}
+      {!brandId && <p className="mt-4 text-sm text-slate-400">請先選擇品牌以顯示店鋪清單</p>}
+    </SectionCard>
+  );
+}
+
+/* ============================================================
  * 2. 填寫區：作業時間 / 件數人數 / 特殊狀況 / 紙本報表照片
  * ============================================================ */
 function FillZone({ db, setDB, month, setMonth, user, toast }) {
@@ -1667,6 +1781,7 @@ function App() {
   // 權限控管：盤點人員僅可使用下載區與填寫區
   const NAV_TABS = [
     { id: "download", label: "📥 主檔下載", roles: ["manager", "staff"] },
+    { id: "count", label: "📋 盤點總表上傳", roles: ["manager", "staff"] },
     { id: "fill", label: "📝 盤點作業情況紀錄", roles: ["manager", "staff"] },
     { id: "analysis", label: "📊 數據分析", roles: ["manager"] },
     { id: "maintain", label: "🛠 維護區", roles: ["manager"] },
@@ -1819,6 +1934,7 @@ function App() {
       {/* 主內容 */}
       <main className="max-w-7xl mx-auto px-4 py-6">
         {tab === "download" && <DownloadZone db={db} month={month} setMonth={setMonth} toast={toast} />}
+        {tab === "count" && <CountUploadZone db={db} setDB={setDB} month={month} setMonth={setMonth} toast={toast} />}
         {tab === "fill" && <FillZone db={db} setDB={setDB} month={month} setMonth={setMonth} user={user} toast={toast} />}
         {tab === "analysis" && <AnalysisZone db={db} month={month} setMonth={setMonth} toast={toast} />}
         {tab === "maintain" && <MaintainZone db={db} setDB={setDB} month={month} setMonth={setMonth} toast={toast} />}
