@@ -91,6 +91,13 @@ const InventoryAPI = {
     return j.url;
   },
 
+  /** 上傳 Layout 圖（圖片或 PDF）。本機模式直接回傳 base64；雲端模式存進 Drive 並回傳檔案連結 */
+  async uploadLayout(dataUrl, filename) {
+    if (!this.cloud()) return dataUrl;
+    const j = await this._post({ action: "uploadLayout", dataUrl, filename });
+    return j.url;
+  },
+
   /* ---------- 內部方法 ---------- */
   _localSave(db) {
     const { mastersIndex, ...rest } = db; // mastersIndex 為衍生資料，不存進主 DB

@@ -11,7 +11,7 @@
 // 盤點照片要存放的 Google Drive 資料夾 ID（即使用者提供的資料夾）
 var PHOTO_FOLDER_ID = "1h9qjSAx2-sojs5_uP307qmBUvw-XiDhn";
 
-var TABS = ["brands", "stores", "staff", "prices", "records", "uploads", "aliases", "manuals"];
+var TABS = ["brands", "stores", "staff", "prices", "records", "uploads", "aliases", "manuals", "layouts"];
 
 // 分頁顯示名稱（程式內部仍用英文代碼；工作表分頁改中文，方便人工檢視）
 var SHEET_NAMES = {
@@ -23,7 +23,8 @@ var SHEET_NAMES = {
   uploads: "上傳紀錄",
   masters: "主檔索引",
   aliases: "店名對應",
-  manuals: "盤點手冊"
+  manuals: "盤點手冊",
+  layouts: "Layout圖"
 };
 
 function doGet(e) {
@@ -47,6 +48,8 @@ function doPost(e) {
       return jsonOut({ ok: true, url: uploadPhoto(body.dataUrl, body.filename) });
     case "uploadManual":
       return jsonOut({ ok: true, url: uploadManual(body.dataUrl, body.filename) });
+    case "uploadLayout":
+      return jsonOut({ ok: true, url: uploadLayout(body.dataUrl, body.filename) });
     case "putMaster":
       putMaster(body.rec);
       return jsonOut({ ok: true });
@@ -117,6 +120,7 @@ function appendRow(tab, row) {
 
 var MAX_PHOTO_BYTES = 10 * 1024 * 1024;  // 單張照片上限 10MB
 var MAX_MANUAL_BYTES = 20 * 1024 * 1024; // 盤點手冊 PDF 上限 20MB
+var MAX_LAYOUT_BYTES = 15 * 1024 * 1024; // Layout 圖上限 15MB
 
 // 共用：驗證並存進 Google Drive，回傳可存取連結
 function uploadToDrive(dataUrl, filename, isAllowedType, maxBytes, rejectMsg) {
@@ -139,6 +143,10 @@ function uploadPhoto(dataUrl, filename) {
 
 function uploadManual(dataUrl, filename) {
   return uploadToDrive(dataUrl, filename, function (ct) { return ct === "application/pdf"; }, MAX_MANUAL_BYTES, "僅允許上傳 PDF 檔");
+}
+
+function uploadLayout(dataUrl, filename) {
+  return uploadToDrive(dataUrl, filename, function (ct) { return ct.indexOf("image/") === 0 || ct === "application/pdf"; }, MAX_LAYOUT_BYTES, "僅允許上傳圖片或 PDF 檔");
 }
 
 /* ---------- 主檔／庫存檔（資料量大：一個資料集 = 一個工作表，一列一筆） ----------

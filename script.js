@@ -64,13 +64,14 @@ const seedDB = {
   uploads: [], // 上傳區：客戶主檔上傳紀錄
   aliases: [], // 店名對應記憶：{ brandId, key(正規化欄標題), storeId }
   manuals: [], // 盤點手冊：{ brandId, fileName, fileUrl, uploadedAt }（一品牌一份，不分店鋪種類）
+  layouts: [], // Layout 圖：{ storeId, month, fileName, fileUrl, uploadedAt }（一店一份，只列主店不含分倉）
 };
 
 /* ---------------- 資料存取（透過 api.js 抽象層） ----------------
  * 維護類資料（單一管理者編輯）→ 整表覆蓋（ADMIN_TABS）
  * 盤點/上傳紀錄（多裝置同時新增）→ 逐筆 append，避免互相覆蓋
  */
-const ADMIN_TABS = ["brands", "stores", "staff", "prices", "aliases", "manuals"];
+const ADMIN_TABS = ["brands", "stores", "staff", "prices", "aliases", "manuals", "layouts"];
 const ALL_TABS = [...ADMIN_TABS, "records", "uploads"];
 function seed() { return JSON.parse(JSON.stringify(seedDB)); }
 
@@ -252,6 +253,19 @@ function sortStoresByDateCode(arr) {
   });
 }
 
+// 產生不重複、合法的 Excel 分頁名稱（≤31字元、去除非法字元），供多分頁匯出使用
+function makeSheetNamer() {
+  const used = new Set();
+  return (base) => {
+    const clean = String(base || "sheet").replace(/[:\\/?*[\]]/g, "_");
+    let name = clean.slice(0, 31) || "sheet";
+    let i = 1;
+    while (used.has(name)) { i++; const suf = "_" + i; name = clean.slice(0, 31 - suf.length) + suf; }
+    used.add(name);
+    return name;
+  };
+}
+
 function Toast({ msg }) {
   if (!msg) return null;
   return (
@@ -422,6 +436,7 @@ function CountUploadZone({ db, setDB, month, setMonth, toast }) {
   const [filters, setFilters] = useState({});
   const setF = (k, v) => setFilters((p) => ({ ...p, [k]: v }));
   const [busy, setBusy] = useState("");
+  const [downloadingAll, setDownloadingAll] = useState(false);
   const index = db.mastersIndex || [];
   const brand = db.brands.find((b) => b.id === brandId);
 
@@ -431,6 +446,30 @@ function CountUploadZone({ db, setDB, month, setMonth, toast }) {
     .filter((s) => s.brandId === brandId && s.month === month)
     .map((s) => ({ ...s, countStatus: hasCount(s.id) ? "已上傳" : "尚未上傳" }));
   const stores = sortStoresByDateCode(baseStores.filter((s) => matchFilters(s, filters)));
+
+  // 本月總表下載：把本品牌本月所有已上傳的盤點總表合併成一個多分頁 Excel
+  const downloadAllCounts = async () => {
+    const entries = index.filter((m) => m.month === month && m.type === "count" && db.stores.some((s) => s.id === m.storeId && s.brandId === brandId));
+    if (entries.length === 0) { toast("本月尚無已上傳的盤點總表"); return; }
+    setDownloadingAll(true);
+    try {
+      const wb = XLSX.utils.book_new();
+      const nameOf = makeSheetNamer();
+      for (const en of entries) {
+        const store = db.stores.find((s) => s.id === en.storeId);
+        const m = await InventoryAPI.getMaster(en.storeId, month, "count");
+        if (!m || !m.columns || m.columns.length === 0) continue;
+        const aoa = [m.columns, ...m.rows.map((r) => m.columns.map((c) => (r[c] == null ? "" : r[c])))];
+        XLSX.utils.book_append_sheet(wb, wsFromMatrix(aoa), nameOf(store ? `${store.code} ${store.name}` : en.storeId));
+      }
+      XLSX.writeFile(wb, `${brand ? brand.name : ""}盤點總表_${month}.xlsx`);
+      toast(`已下載本月 ${entries.length} 家店的盤點總表 ✔`);
+    } catch (err) {
+      toast("下載失敗，請確認網路後再試");
+    } finally {
+      setDownloadingAll(false);
+    }
+  };
 
   // 上傳盤點總表：容錯常見欄名，轉存為標準 MASTER_COLS 格式（庫存數量＝實盤數量）
   const onUpload = (store) => async (e) => {
@@ -470,6 +509,10 @@ function CountUploadZone({ db, setDB, month, setMonth, toast }) {
         <BrandStoreSelect db={db} brandId={brandId} month={month} onBrand={setBrandId} showStore={false} />
         <input type="month" value={month} onChange={(e) => setMonth(e.target.value)} title="盤點月份"
           className="px-3 py-2 border border-slate-300 rounded-lg text-sm bg-white focus:ring-2 focus:ring-blue-500 outline-none" />
+        <button onClick={downloadAllCounts} disabled={downloadingAll || !brandId}
+          className="px-3 py-2 bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-400 text-white text-sm rounded-lg">
+          {downloadingAll ? "下載中…" : "⬇ 本月總表下載"}
+        </button>
       </div>
 
       {brandId && (
@@ -516,6 +559,125 @@ function CountUploadZone({ db, setDB, month, setMonth, toast }) {
               ))}
               {stores.length === 0 && (
                 <tr><td colSpan="7" className="py-6 text-center text-slate-400">查無符合條件的店鋪</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      )}
+      {!brandId && <p className="mt-4 text-sm text-slate-400">請先選擇品牌以顯示店鋪清單</p>}
+    </SectionCard>
+  );
+}
+
+/* ============================================================
+ * 0. Layout 圖：上傳／下載各店鋪賣場配置圖（圖片或 PDF）
+ *    只列主店（不含分倉，因分倉是同一實體店鋪的虛擬切分）
+ * ============================================================ */
+function LayoutZone({ db, setDB, month, setMonth, toast }) {
+  const [brandId, setBrandId] = useState("");
+  const [filters, setFilters] = useState({});
+  const setF = (k, v) => setFilters((p) => ({ ...p, [k]: v }));
+  const [busy, setBusy] = useState("");
+  const brand = db.brands.find((b) => b.id === brandId);
+
+  const layoutOf = (storeId) => (db.layouts || []).find((l) => l.storeId === storeId && l.month === month);
+
+  const baseStores = db.stores
+    .filter((s) => s.brandId === brandId && s.month === month && !s.isSub) // 只列主店，不含分倉
+    .map((s) => ({ ...s, layoutStatus: layoutOf(s.id) ? "已上傳" : "尚未上傳" }));
+  const stores = sortStoresByDateCode(baseStores.filter((s) => matchFilters(s, filters)));
+
+  const onUpload = (store) => (e) => {
+    const f = e.target.files[0];
+    if (!f) return;
+    if (!/\.(jpg|jpeg|png|pdf)$/i.test(f.name)) { toast("僅接受圖片（jpg/png）或 PDF 檔"); e.target.value = ""; return; }
+    setBusy(store.id);
+    const reader = new FileReader();
+    reader.onload = async () => {
+      try {
+        const url = await InventoryAPI.uploadLayout(reader.result, f.name);
+        const rec = { storeId: store.id, month, fileName: f.name, fileUrl: url, uploadedAt: new Date().toISOString().slice(0, 10) };
+        setDB((d) => ({ ...d, layouts: [...(d.layouts || []).filter((l) => !(l.storeId === store.id && l.month === month)), rec] }));
+        toast(`已上傳「${store.name}」Layout 圖 ✔`);
+      } catch (err) {
+        toast("上傳失敗，請確認網路或檔案格式");
+      } finally {
+        setBusy("");
+        e.target.value = "";
+      }
+    };
+    reader.readAsDataURL(f);
+  };
+
+  // 本月總表下載：依序觸發下載本品牌本月所有已上傳的 Layout 圖
+  const downloadAll = () => {
+    const list = (db.layouts || []).filter((l) => l.month === month && db.stores.some((s) => s.id === l.storeId && s.brandId === brandId));
+    if (list.length === 0) { toast("本月尚無已上傳的 Layout 圖"); return; }
+    list.forEach((l, i) => {
+      setTimeout(() => {
+        const a = document.createElement("a");
+        a.href = l.fileUrl; a.download = l.fileName; a.target = "_blank"; a.rel = "noreferrer";
+        document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      }, i * 400); // 間隔觸發，降低瀏覽器擋下多重下載的機率
+    });
+    toast(`已觸發下載本月 ${list.length} 份 Layout 圖`);
+  };
+
+  return (
+    <SectionCard title="🗺️ Layout 圖" subtitle="上傳／下載各店鋪賣場配置圖（圖片或 PDF）；只列主店，不含分倉">
+      <div className="flex flex-wrap gap-3 items-center">
+        <BrandStoreSelect db={db} brandId={brandId} month={month} onBrand={setBrandId} showStore={false} />
+        <input type="month" value={month} onChange={(e) => setMonth(e.target.value)} title="盤點月份"
+          className="px-3 py-2 border border-slate-300 rounded-lg text-sm bg-white focus:ring-2 focus:ring-blue-500 outline-none" />
+        <button onClick={downloadAll} disabled={!brandId}
+          className="px-3 py-2 bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-400 text-white text-sm rounded-lg">⬇ 本月總表下載</button>
+      </div>
+
+      {brandId && (
+        <div className="table-scroll mt-4">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="text-left text-slate-500 border-b">
+                <th className="py-2 pr-4">盤點日期</th>
+                <th className="py-2 pr-4">店鋪代碼</th>
+                <th className="py-2 pr-4">店鋪名稱</th>
+                <th className="py-2 pr-4">主責課</th>
+                <th className="py-2 pr-4">狀態</th>
+                <th className="py-2 pr-4">操作</th>
+              </tr>
+              <tr className="border-b">
+                <th className="py-1 pr-4"><FilterSelect value={filters.auditDate} onChange={(v) => setF("auditDate", v)} options={distinctVals(baseStores, "auditDate")} /></th>
+                <th className="py-1 pr-4"><FilterSelect value={filters.code} onChange={(v) => setF("code", v)} options={distinctVals(baseStores, "code")} /></th>
+                <th className="py-1 pr-4"><FilterSelect value={filters.name} onChange={(v) => setF("name", v)} options={distinctVals(baseStores, "name")} /></th>
+                <th className="py-1 pr-4"><FilterSelect value={filters.dept} onChange={(v) => setF("dept", v)} options={distinctDepts(baseStores, "dept")} /></th>
+                <th className="py-1 pr-4"><FilterSelect value={filters.layoutStatus} onChange={(v) => setF("layoutStatus", v)} options={["已上傳", "尚未上傳"]} /></th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {stores.map((s) => {
+                const l = layoutOf(s.id);
+                return (
+                  <tr key={s.id} className="border-b last:border-0">
+                    <td className="py-3 pr-4">{s.auditDate || "—"}</td>
+                    <td className="py-3 pr-4 font-mono">{s.code}</td>
+                    <td className="py-3 pr-4">{s.name}</td>
+                    <td className="py-3 pr-4">{s.dept || "—"}</td>
+                    <td className="py-3 pr-4">{l ? <span className="text-emerald-600">已上傳</span> : <span className="text-slate-400">尚未上傳</span>}</td>
+                    <td className="py-3 pr-4">
+                      <div className="flex items-center gap-2">
+                        <label className={"inline-block px-3 py-1.5 text-white text-sm rounded-lg cursor-pointer " + (busy === s.id ? "bg-slate-400" : "bg-blue-600 hover:bg-blue-700")}>
+                          {busy === s.id ? "上傳中…" : "⬆ 上傳"}
+                          <input type="file" accept=".jpg,.jpeg,.png,.pdf" className="hidden" disabled={busy === s.id} onChange={onUpload(s)} />
+                        </label>
+                        {l && <a href={l.fileUrl} target="_blank" rel="noreferrer" className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-sm rounded-lg">⬇ 下載</a>}
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
+              {stores.length === 0 && (
+                <tr><td colSpan="6" className="py-6 text-center text-slate-400">查無符合條件的店鋪</td></tr>
               )}
             </tbody>
           </table>
@@ -1453,6 +1615,7 @@ function MaintainZone({ db, setDB, month, setMonth, toast }) {
               name: `${mainName}_${subSuffix(subEnName)}`,
               div: x.div, dept: x.dept, category: x.category,
               enName: subEnName, warehouse: "1", auditDate: x.auditDate, srcFile: f.name,
+              isSub: true, parentCode: mainCode, // 標記為分倉：Layout 區等「只列主店」的畫面會排除這些列
             });
           });
         });
@@ -1780,6 +1943,7 @@ function App() {
 
   // 權限控管：盤點人員僅可使用下載區與填寫區
   const NAV_TABS = [
+    { id: "layout", label: "🗺️ Layout 圖", roles: ["manager", "staff"] },
     { id: "download", label: "📥 主檔下載", roles: ["manager", "staff"] },
     { id: "count", label: "📋 盤點總表上傳", roles: ["manager", "staff"] },
     { id: "fill", label: "📝 盤點作業情況紀錄", roles: ["manager", "staff"] },
@@ -1933,6 +2097,7 @@ function App() {
 
       {/* 主內容 */}
       <main className="max-w-7xl mx-auto px-4 py-6">
+        {tab === "layout" && <LayoutZone db={db} setDB={setDB} month={month} setMonth={setMonth} toast={toast} />}
         {tab === "download" && <DownloadZone db={db} month={month} setMonth={setMonth} toast={toast} />}
         {tab === "count" && <CountUploadZone db={db} setDB={setDB} month={month} setMonth={setMonth} toast={toast} />}
         {tab === "fill" && <FillZone db={db} setDB={setDB} month={month} setMonth={setMonth} user={user} toast={toast} />}
