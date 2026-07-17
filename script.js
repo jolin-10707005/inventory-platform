@@ -385,9 +385,12 @@ function DownloadZone({ db, month, setMonth, toast }) {
   const masterKey = (s) => osheng ? ("CAT::" + (s.category || "")) : s.id;
   const has = (storeId, type) => index.some((m) => m.storeId === storeId && m.month === month && m.type === type);
 
+  // 分倉標示：分倉列顯示倉別後綴（如「台中三井_Destroy」→「Destroy」），主店列顯示「主店」
+  const whLabel = (s) => s.isSub ? s.name.slice(s.name.lastIndexOf("_") + 1) : "主店";
+
   const baseStores = db.stores
     .filter((s) => s.brandId === brandId && s.month === month)
-    .map((s) => ({ ...s, masterStatus: has(masterKey(s), "master") ? "可下載" : "尚未產製", stockStatus: has(s.id, "stock") ? "可下載" : "尚未產製" }));
+    .map((s) => ({ ...s, whLabel: whLabel(s), masterStatus: has(masterKey(s), "master") ? "可下載" : "尚未產製", stockStatus: has(s.id, "stock") ? "可下載" : "尚未產製" }));
   const stores = sortStoresByDateCode(baseStores.filter((s) => matchFilters(s, filters)));
 
   // 下載：輸出上傳時已重建好的標準格式（全部文字）；主檔取店鋪種類、庫存檔取單店
@@ -452,6 +455,7 @@ function DownloadZone({ db, month, setMonth, toast }) {
                 <th className="py-2 pr-4">店鋪名稱</th>
                 <th className="py-2 pr-4">主責課</th>
                 <th className="py-2 pr-4">店鋪種類</th>
+                <th className="py-2 pr-4">分倉</th>
                 <th className="py-2 pr-4">盤點主檔</th>
                 <th className="py-2 pr-4">庫存檔</th>
               </tr>
@@ -461,6 +465,7 @@ function DownloadZone({ db, month, setMonth, toast }) {
                 <th className="py-1 pr-4"><FilterSelect value={filters.name} onChange={(v) => setF("name", v)} options={distinctVals(baseStores, "name")} /></th>
                 <th className="py-1 pr-4"><FilterSelect value={filters.dept} onChange={(v) => setF("dept", v)} options={distinctDepts(baseStores, "dept")} /></th>
                 <th className="py-1 pr-4"><FilterSelect value={filters.category} onChange={(v) => setF("category", v)} options={distinctVals(baseStores, "category")} /></th>
+                <th className="py-1 pr-4"><FilterSelect value={filters.whLabel} onChange={(v) => setF("whLabel", v)} options={distinctVals(baseStores, "whLabel")} /></th>
                 <th className="py-1 pr-4"><FilterSelect value={filters.masterStatus} onChange={(v) => setF("masterStatus", v)} options={["可下載", "尚未產製"]} /></th>
                 <th className="py-1 pr-4"><FilterSelect value={filters.stockStatus} onChange={(v) => setF("stockStatus", v)} options={["可下載", "尚未產製"]} /></th>
               </tr>
@@ -473,12 +478,13 @@ function DownloadZone({ db, month, setMonth, toast }) {
                   <td className="py-3 pr-4">{s.name}</td>
                   <td className="py-3 pr-4">{s.dept || "—"}</td>
                   <td className="py-3 pr-4">{s.category || "—"}</td>
+                  <td className="py-3 pr-4">{s.isSub ? <span className="text-amber-600">{s.whLabel}</span> : "主店"}</td>
                   <td className="py-3 pr-4">{cell(s, "master")}</td>
                   <td className="py-3 pr-4">{cell(s, "stock")}</td>
                 </tr>
               ))}
               {stores.length === 0 && (
-                <tr><td colSpan="7" className="py-6 text-center text-slate-400">查無符合條件的店鋪</td></tr>
+                <tr><td colSpan="8" className="py-6 text-center text-slate-400">查無符合條件的店鋪</td></tr>
               )}
             </tbody>
           </table>
