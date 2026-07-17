@@ -1280,13 +1280,15 @@ function MaintainZone({ db, setDB, month, setMonth, toast }) {
 
   // 匯入範本欄位
   const TEMPLATES = {
-    stores: ["店鋪代碼", "店鋪名稱", "主責課", "店鋪種類", "英文店名", "倉別量", "盤點日期"],
+    stores: ["店鋪代碼", "店鋪名稱", "主責課", "店鋪種類", "英文店名", "倉別量", "盤點日期", "分倉英文店名（多個用逗號分隔）"],
     staff: ["部別", "課別", "工號", "姓名", "職稱"],
   };
   // 下載匯入範本（Excel）
   const downloadTemplate = (kind) => {
     const label = kind === "stores" ? "店鋪名單" : "盤點人員名單";
-    exportXLSX(`${label}_匯入範本.xlsx`, label, [TEMPLATES[kind], kind === "stores" ? ["AS-001", "微風本館 JV", "北一課", "JV", "JV BREEZE MAIN", "1", "2026-01-06"] : ["一部", "北一課", "E001", "範例姓名", "資深專員"]]);
+    exportXLSX(`${label}_匯入範本.xlsx`, label, [TEMPLATES[kind], kind === "stores"
+      ? ["TO006", "華泰名品城", "桃竹課", "Outlet", "華泰名品城", "4", "2026-01-06", "Gloria_Destroy,Gloria_Family Sale,GLORIA_Temp Store"]
+      : ["一部", "北一課", "E001", "範例姓名", "資深專員"]]);
     toast(`已下載${label}匯入範本`);
   };
 
@@ -1302,22 +1304,50 @@ function MaintainZone({ db, setDB, month, setMonth, toast }) {
       const findH = (re) => headers.find((h) => re.test(String(h)));
       if (kind === "stores") {
         const hCode = findH(/店鋪代碼|店點代號|代號|代碼|code/i);
-        const hName = headers.find((h) => /店鋪名稱|店名|名稱|name/i.test(String(h)) && !/英文/.test(String(h)));
+        const hName = headers.find((h) => /店鋪名稱|店名|名稱|name/i.test(String(h)) && !/英文/.test(String(h)) && !/分倉/.test(String(h)));
         const hDiv = findH(/主責部|部別/i);
         const hDept = findH(/主責課|課別|dept/i);
         const hCat = findH(/主檔類別|店鋪種類|類別|種類|category/i);
-        const hEn = findH(/英文/i) || findH(/enName/i);
-        const hWh = findH(/倉別/i);
+        const hEn = headers.find((h) => /英文/.test(String(h)) && !/分倉/.test(String(h))) || findH(/enName/i);
+        const hWh = findH(/倉別量|倉別|warehouse/i);
         const hAudit = findH(/盤點日期|日期|date/i);
+        const hSubEn = findH(/分倉.*英文|分倉店名|sub.*en/i); // 多倉別：主店一列填多個客戶檔英文名(逗號分隔)，自動展開成分倉列
         const get = (r, h) => h ? String(r[h] == null ? "" : r[h]).trim() : "";
-        const items = rows.map((r) => ({ code: get(r, hCode), name: get(r, hName), div: get(r, hDiv), dept: get(r, hDept), category: get(r, hCat), enName: get(r, hEn), warehouse: get(r, hWh), auditDate: get(r, hAudit) }))
-          .filter((x) => x.code || x.name)
-          .map((x) => ({ id: uid("S"), brandId, month, code: x.code || x.name, name: x.name || x.code, div: x.div, dept: x.dept, category: x.category, enName: x.enName, warehouse: x.warehouse, auditDate: x.auditDate, srcFile: f.name }));
+        const splitSub = (v) => v.split(/[,，;；]/).map((s) => s.trim()).filter(Boolean);
+        // 分倉英文名取「主品牌前綴之後」的部分當倉別後綴，如 "Gloria_Destroy"→"Destroy"、"MITSUI TAINAN Sale"→"Sale"
+        const subSuffix = (enName) => {
+          if (enName.includes("_")) { const p = enName.split("_"); return p[p.length - 1].trim(); }
+          const w = enName.trim().split(/\s+/); return w[w.length - 1];
+        };
+
+        const raw = rows.map((r) => ({
+          code: get(r, hCode), name: get(r, hName), div: get(r, hDiv), dept: get(r, hDept),
+          category: get(r, hCat), enName: get(r, hEn), warehouse: get(r, hWh), auditDate: get(r, hAudit),
+          subEn: hSubEn ? get(r, hSubEn) : "",
+        })).filter((x) => x.code || x.name);
+
+        let subCount = 0;
+        const items = [];
+        raw.forEach((x) => {
+          const mainCode = x.code || x.name, mainName = x.name || x.code;
+          items.push({ id: uid("S"), brandId, month, code: mainCode, name: mainName, div: x.div, dept: x.dept, category: x.category, enName: x.enName, warehouse: x.warehouse, auditDate: x.auditDate, srcFile: f.name });
+          splitSub(x.subEn).forEach((subEnName, i) => {
+            subCount++;
+            items.push({
+              id: uid("S"), brandId, month,
+              code: `${mainCode}-${i + 1}`,
+              name: `${mainName}_${subSuffix(subEnName)}`,
+              div: x.div, dept: x.dept, category: x.category,
+              enName: subEnName, warehouse: "1", auditDate: x.auditDate, srcFile: f.name,
+            });
+          });
+        });
+
         if (items.length === 0) { toast("未讀到有效店鋪資料，請確認欄位（店鋪代碼/店名）"); e.target.value = ""; return; }
         // 同檔名重匯：先清掉上次此檔匯入的店鋪（本品牌本月），保留手動新增與其他檔匯入
         const prior = db.stores.filter((s) => s.srcFile === f.name && s.brandId === brandId && s.month === month).length;
         setDB((d) => ({ ...d, stores: [...d.stores.filter((s) => !(s.srcFile === f.name && s.brandId === brandId && s.month === month)), ...items] }));
-        toast(`已匯入 ${items.length} 家店鋪 ✔${prior ? `（已清除同檔名舊資料 ${prior} 筆）` : ""}`);
+        toast(`已匯入 ${items.length} 筆店鋪資料 ✔${subCount ? `（自動展開 ${subCount} 筆分倉）` : ""}${prior ? `；已清除同檔名舊資料 ${prior} 筆` : ""}`);
       } else {
         const hDiv = findH(/部別|部門|div/i);
         const hSec = findH(/課別|主責課/i);
