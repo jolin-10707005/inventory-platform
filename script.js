@@ -1250,7 +1250,7 @@ function MaintainZone({ db, setDB, month, setMonth, toast }) {
 
   const baseStores = db.stores.filter((s) => s.brandId === brandId && s.month === month);
   const baseStaff = db.staff.filter((p) => p.brandId === brandId && p.month === month);
-  const stores = sortStoresByName(baseStores.filter((s) => matchFilters(s, sFilters)));
+  const stores = sortStoresByDateCode(baseStores.filter((s) => matchFilters(s, sFilters)));
   const staff = baseStaff.filter((p) => matchFilters(p, pFilters));
 
   // TODO: IT 工程師請在此串接後端 API 邏輯（POST /api/brands）
