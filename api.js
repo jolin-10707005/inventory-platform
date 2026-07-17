@@ -84,18 +84,34 @@ const InventoryAPI = {
     return j.url;
   },
 
-  /** 上傳盤點手冊 PDF。本機模式直接回傳 base64；雲端模式存進 Drive 並回傳檔案連結 */
-  async uploadManual(dataUrl, filename) {
+  /** 上傳盤點手冊 PDF（存進該品牌的「盤點手冊」資料夾）。本機模式直接回傳 base64；雲端模式存進 Drive 並回傳檔案連結 */
+  async uploadManual(dataUrl, filename, brandName) {
     if (!this.cloud()) return dataUrl;
-    const j = await this._post({ action: "uploadManual", dataUrl, filename });
+    const j = await this._post({ action: "uploadManual", dataUrl, filename, brandName });
     return j.url;
   },
 
-  /** 上傳 Layout 圖（圖片或 PDF）。本機模式直接回傳 base64；雲端模式存進 Drive 並回傳檔案連結 */
-  async uploadLayout(dataUrl, filename) {
+  /** 上傳 Layout 圖（Excel 原檔，存進該品牌的「Layout圖」資料夾）。本機模式直接回傳 base64；雲端模式存進 Drive 並回傳檔案連結 */
+  async uploadLayout(dataUrl, filename, brandName) {
     if (!this.cloud()) return dataUrl;
-    const j = await this._post({ action: "uploadLayout", dataUrl, filename });
+    const j = await this._post({ action: "uploadLayout", dataUrl, filename, brandName });
     return j.url;
+  },
+
+  /** 上傳盤點總表 Excel 原檔（存進該品牌的「盤點總表」資料夾，一店一檔，不解析內容）。本機模式直接回傳 base64 */
+  async uploadCountSheet(dataUrl, filename, brandName) {
+    if (!this.cloud()) return dataUrl;
+    const j = await this._post({ action: "uploadCountSheet", dataUrl, filename, brandName });
+    return j.url;
+  },
+
+  /** 批次打包下載（伺服器端 zip，避免瀏覽器端抓既有 Drive 檔案的 CORS 限制）
+   *  files = [{fileUrl, fileName}]；回傳 { filename, base64 }。本機模式無 Drive，回傳 null 讓呼叫端改用逐個下載 */
+  async zipFiles(files, zipName) {
+    if (!this.cloud()) return null;
+    const j = await this._post({ action: "zipFiles", files, zipName });
+    if (j.error) throw new Error(j.error);
+    return { filename: j.filename, base64: j.base64 };
   },
 
   /* ---------- 內部方法 ---------- */

@@ -64,14 +64,15 @@ const seedDB = {
   uploads: [], // 上傳區：客戶主檔上傳紀錄
   aliases: [], // 店名對應記憶：{ brandId, key(正規化欄標題), storeId }
   manuals: [], // 盤點手冊：{ brandId, fileName, fileUrl, uploadedAt }（一品牌一份，不分店鋪種類）
-  layouts: [], // Layout 圖：{ storeId, month, fileName, fileUrl, uploadedAt }（一店一份，只列主店不含分倉）
+  layouts: [], // Layout 圖：{ storeId, month, fileName, fileUrl, uploadedAt }（一店一份，只列主店不含分倉，原檔存 Drive）
+  countTotals: [], // 盤點總表：{ storeId, month, fileName, fileUrl, total, uploadedAt }（一店一檔，原檔存 Drive，只擷取「合計盤點總數」）
 };
 
 /* ---------------- 資料存取（透過 api.js 抽象層） ----------------
  * 維護類資料（單一管理者編輯）→ 整表覆蓋（ADMIN_TABS）
  * 盤點/上傳紀錄（多裝置同時新增）→ 逐筆 append，避免互相覆蓋
  */
-const ADMIN_TABS = ["brands", "stores", "staff", "prices", "aliases", "manuals", "layouts"];
+const ADMIN_TABS = ["brands", "stores", "staff", "prices", "aliases", "manuals", "layouts", "countTotals"];
 const ALL_TABS = [...ADMIN_TABS, "records", "uploads"];
 function seed() { return JSON.parse(JSON.stringify(seedDB)); }
 
@@ -213,6 +214,68 @@ function readXLSX(file) {
     reader.onerror = reject;
     reader.readAsArrayBuffer(file);
   });
+}
+
+// 讀取 .xlsx / .xls 為原始二維陣列（不做表頭對應），供掃描檔案中固定文字標籤（如「合計盤點總數」）用
+function readXLSXMatrix(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        const wb = XLSX.read(e.target.result, { type: "array" });
+        const ws = wb.Sheets[wb.SheetNames[0]];
+        resolve(XLSX.utils.sheet_to_json(ws, { header: 1, defval: "", raw: false }));
+      } catch (err) { reject(err); }
+    };
+    reader.onerror = reject;
+    reader.readAsArrayBuffer(file);
+  });
+}
+
+// 在二維陣列中找指定文字標籤，回傳其右邊相鄰欄的數字（找不到回 null）；盤點總表用此擷取「合計盤點總數」
+function findLabeledTotal(aoa, label) {
+  for (const row of aoa) {
+    for (let i = 0; i < row.length - 1; i++) {
+      if (String(row[i]).trim() === label) {
+        const n = Number(String(row[i + 1]).trim());
+        return isNaN(n) ? null : n;
+      }
+    }
+  }
+  return null;
+}
+
+// 將後端回傳的 base64 zip 觸發瀏覽器下載
+function downloadBase64Zip(filename, base64) {
+  const bin = atob(base64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  const blob = new Blob([bytes], { type: "application/zip" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+// 批次下載一批「一檔一店」的原始檔案：雲端模式交由後端打包成單一 zip（避免瀏覽器端抓 Drive 檔案的 CORS 限制）；
+// 本機開發模式（無 Drive）則改為依序逐個觸發下載
+async function bulkDownloadFiles(list, zipBaseName, toast) {
+  if (list.length === 0) { toast("本月尚無已上傳的檔案"); return; }
+  if (InventoryAPI.cloud()) {
+    try {
+      const z = await InventoryAPI.zipFiles(list.map((l) => ({ fileUrl: l.fileUrl, fileName: l.fileName })), zipBaseName);
+      if (z) { downloadBase64Zip(z.filename, z.base64); toast(`已下載本月 ${list.length} 份檔案（zip）✔`); return; }
+    } catch (err) { toast("打包下載失敗，請確認網路後再試"); return; }
+  }
+  list.forEach((l, i) => {
+    setTimeout(() => {
+      const a = document.createElement("a");
+      a.href = l.fileUrl; a.download = l.fileName; a.target = "_blank"; a.rel = "noreferrer";
+      document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    }, i * 400); // 間隔觸發，降低瀏覽器擋下多重下載的機率
+  });
+  toast(`已觸發下載本月 ${list.length} 份檔案`);
 }
 
 /* ---------------- 共用元件 ---------------- */
@@ -431,76 +494,57 @@ function DownloadZone({ db, month, setMonth, toast }) {
  *     比照主檔下載區（品牌+月份、店鋪列表含分倉、依盤點日期→店號排序）
  *     每家店（含分倉）只保留最新一份，重新上傳覆蓋舊檔
  * ============================================================ */
+// 盤點總表摘要值固定標籤（檔案最後幾列的固定格式，位置隨資料筆數變動，逐列掃描比對）
+const COUNT_TOTAL_LABEL = "合計盤點總數";
+
 function CountUploadZone({ db, setDB, month, setMonth, toast }) {
   const [brandId, setBrandId] = useState("");
   const [filters, setFilters] = useState({});
   const setF = (k, v) => setFilters((p) => ({ ...p, [k]: v }));
   const [busy, setBusy] = useState("");
   const [downloadingAll, setDownloadingAll] = useState(false);
-  const index = db.mastersIndex || [];
   const brand = db.brands.find((b) => b.id === brandId);
 
-  const hasCount = (storeId) => index.some((m) => m.storeId === storeId && m.month === month && m.type === "count");
+  const countOf = (storeId) => (db.countTotals || []).find((c) => c.storeId === storeId && c.month === month);
 
   const baseStores = db.stores
     .filter((s) => s.brandId === brandId && s.month === month)
-    .map((s) => ({ ...s, countStatus: hasCount(s.id) ? "已上傳" : "尚未上傳" }));
+    .map((s) => ({ ...s, countStatus: countOf(s.id) ? "已上傳" : "尚未上傳" }));
   const stores = sortStoresByDateCode(baseStores.filter((s) => matchFilters(s, filters)));
 
-  // 本月總表下載：把本品牌本月所有已上傳的盤點總表合併成一個多分頁 Excel
+  // 本月總表下載：一店一檔，不合併，交由伺服器端打包成 zip（或本機模式依序下載）
   const downloadAllCounts = async () => {
-    const entries = index.filter((m) => m.month === month && m.type === "count" && db.stores.some((s) => s.id === m.storeId && s.brandId === brandId));
-    if (entries.length === 0) { toast("本月尚無已上傳的盤點總表"); return; }
+    const list = (db.countTotals || []).filter((c) => c.month === month && db.stores.some((s) => s.id === c.storeId && s.brandId === brandId));
     setDownloadingAll(true);
-    try {
-      const wb = XLSX.utils.book_new();
-      const nameOf = makeSheetNamer();
-      for (const en of entries) {
-        const store = db.stores.find((s) => s.id === en.storeId);
-        const m = await InventoryAPI.getMaster(en.storeId, month, "count");
-        if (!m || !m.columns || m.columns.length === 0) continue;
-        const aoa = [m.columns, ...m.rows.map((r) => m.columns.map((c) => (r[c] == null ? "" : r[c])))];
-        XLSX.utils.book_append_sheet(wb, wsFromMatrix(aoa), nameOf(store ? `${store.code} ${store.name}` : en.storeId));
-      }
-      XLSX.writeFile(wb, `${brand ? brand.name : ""}盤點總表_${month}.xlsx`);
-      toast(`已下載本月 ${entries.length} 家店的盤點總表 ✔`);
-    } catch (err) {
-      toast("下載失敗，請確認網路後再試");
-    } finally {
-      setDownloadingAll(false);
-    }
+    try { await bulkDownloadFiles(list, `${brand ? brand.name : ""}盤點總表_${month}`, toast); }
+    finally { setDownloadingAll(false); }
   };
 
-  // 上傳盤點總表：容錯常見欄名，轉存為標準 MASTER_COLS 格式（庫存數量＝實盤數量）
-  const onUpload = (store) => async (e) => {
+  // 上傳盤點總表：保留原始 Excel 檔存進 Drive（一店一檔，不解析內容），只擷取「合計盤點總數」供顯示/請款參考
+  const onUpload = (store) => (e) => {
     const f = e.target.files[0];
     if (!f) return;
     if (!/\.(xlsx|xls)$/i.test(f.name)) { toast("僅接受 Excel 檔（.xlsx / .xls）"); e.target.value = ""; return; }
     setBusy(store.id);
-    try {
-      const { headers, rows } = await readXLSX(f);
-      const findH2 = (re) => headers.find((h) => re.test(String(h)));
-      const hCode = findH2(/商品編號|貨號|品號|barcode|條碼|sku/i);
-      const hQty = findH2(/實盤|盤點數量|庫存數量|數量|qty/i);
-      if (!hCode || !hQty) { toast("找不到商品編號或數量欄位，請確認檔案格式"); return; }
-      const hName = findH2(/物品名稱|品名|名稱/i);
-      const hCost = findH2(/成本|單價|零售價/i);
-      const get = (r, h) => h ? String(r[h] == null ? "" : r[h]).trim() : "";
-      const stdRows = rows
-        .map((r) => ({ "商品編號": get(r, hCode), "barcode": get(r, hCode), "舊商品編號2": "", "物品名稱": get(r, hName), "庫存數量": get(r, hQty), "品項平均成本": get(r, hCost) }))
-        .filter((r) => r["商品編號"]);
-      if (stdRows.length === 0) { toast("檔案沒有可讀取的資料列"); return; }
-      for (const r of stdRows) { if (!isIntStr(r["庫存數量"])) { toast("數量欄須為整數，請確認檔案"); return; } }
-      await InventoryAPI.putMaster({ storeId: store.id, month, type: "count", srcFile: f.name, columns: MASTER_COLS, rows: stdRows });
-      const idx = (db.mastersIndex || []).filter((m) => !(m.storeId === store.id && m.month === month && m.type === "count"));
-      setDB({ ...db, mastersIndex: [...idx, { storeId: store.id, month, type: "count", srcFile: f.name }] });
-      toast(`已上傳「${store.name}」盤點總表（${stdRows.length} 筆）✔`);
-    } catch (err) {
-      toast("上傳失敗，請確認網路或檔案格式");
-    } finally {
-      setBusy("");
-      e.target.value = "";
-    }
+    const reader = new FileReader();
+    reader.onload = async () => {
+      try {
+        const aoa = await readXLSXMatrix(f);
+        const total = findLabeledTotal(aoa, COUNT_TOTAL_LABEL);
+        const url = await InventoryAPI.uploadCountSheet(reader.result, f.name, brand ? brand.name : "");
+        const rec = { storeId: store.id, month, fileName: f.name, fileUrl: url, total, uploadedAt: new Date().toISOString().slice(0, 10) };
+        setDB((d) => ({ ...d, countTotals: [...(d.countTotals || []).filter((c) => !(c.storeId === store.id && c.month === month)), rec] }));
+        toast(total == null
+          ? `已上傳「${store.name}」盤點總表，但找不到「${COUNT_TOTAL_LABEL}」，請確認檔案格式`
+          : `已上傳「${store.name}」盤點總表（合計盤點總數 ${total}）✔`);
+      } catch (err) {
+        toast("上傳失敗，請確認網路或檔案格式");
+      } finally {
+        setBusy("");
+        e.target.value = "";
+      }
+    };
+    reader.readAsDataURL(f);
   };
 
   return (
@@ -539,24 +583,32 @@ function CountUploadZone({ db, setDB, month, setMonth, toast }) {
               </tr>
             </thead>
             <tbody>
-              {stores.map((s) => (
-                <tr key={s.id} className="border-b last:border-0">
-                  <td className="py-3 pr-4">{s.auditDate || "—"}</td>
-                  <td className="py-3 pr-4 font-mono">{s.code}</td>
-                  <td className="py-3 pr-4">{s.name}</td>
-                  <td className="py-3 pr-4">{s.dept || "—"}</td>
-                  <td className="py-3 pr-4">{s.category || "—"}</td>
-                  <td className="py-3 pr-4">
-                    {s.countStatus === "已上傳" ? <span className="text-emerald-600">已上傳</span> : <span className="text-slate-400">尚未上傳</span>}
-                  </td>
-                  <td className="py-3 pr-4">
-                    <label className={"inline-block px-3 py-1.5 text-white text-sm rounded-lg cursor-pointer " + (busy === s.id ? "bg-slate-400" : "bg-blue-600 hover:bg-blue-700")}>
-                      {busy === s.id ? "上傳中…" : "⬆ 上傳"}
-                      <input type="file" accept=".xlsx,.xls" className="hidden" disabled={busy === s.id} onChange={onUpload(s)} />
-                    </label>
-                  </td>
-                </tr>
-              ))}
+              {stores.map((s) => {
+                const c = countOf(s.id);
+                return (
+                  <tr key={s.id} className="border-b last:border-0">
+                    <td className="py-3 pr-4">{s.auditDate || "—"}</td>
+                    <td className="py-3 pr-4 font-mono">{s.code}</td>
+                    <td className="py-3 pr-4">{s.name}</td>
+                    <td className="py-3 pr-4">{s.dept || "—"}</td>
+                    <td className="py-3 pr-4">{s.category || "—"}</td>
+                    <td className="py-3 pr-4">
+                      {c
+                        ? <span className="text-emerald-600">已上傳{c.total != null ? `（合計 ${c.total}）` : "（無總數）"}</span>
+                        : <span className="text-slate-400">尚未上傳</span>}
+                    </td>
+                    <td className="py-3 pr-4">
+                      <div className="flex items-center gap-2">
+                        <label className={"inline-block px-3 py-1.5 text-white text-sm rounded-lg cursor-pointer " + (busy === s.id ? "bg-slate-400" : "bg-blue-600 hover:bg-blue-700")}>
+                          {busy === s.id ? "上傳中…" : "⬆ 上傳"}
+                          <input type="file" accept=".xlsx,.xls" className="hidden" disabled={busy === s.id} onChange={onUpload(s)} />
+                        </label>
+                        {c && <a href={c.fileUrl} target="_blank" rel="noreferrer" className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-sm rounded-lg">⬇ 下載</a>}
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
               {stores.length === 0 && (
                 <tr><td colSpan="7" className="py-6 text-center text-slate-400">查無符合條件的店鋪</td></tr>
               )}
@@ -570,7 +622,7 @@ function CountUploadZone({ db, setDB, month, setMonth, toast }) {
 }
 
 /* ============================================================
- * 0. Layout 圖：上傳／下載各店鋪賣場配置圖（圖片或 PDF）
+ * 0. Layout 圖：上傳／下載各店鋪賣場配置圖（Excel 原檔，保留視覺配置不解析）
  *    只列主店（不含分倉，因分倉是同一實體店鋪的虛擬切分）
  * ============================================================ */
 function LayoutZone({ db, setDB, month, setMonth, toast }) {
@@ -578,6 +630,7 @@ function LayoutZone({ db, setDB, month, setMonth, toast }) {
   const [filters, setFilters] = useState({});
   const setF = (k, v) => setFilters((p) => ({ ...p, [k]: v }));
   const [busy, setBusy] = useState("");
+  const [downloadingAll, setDownloadingAll] = useState(false);
   const brand = db.brands.find((b) => b.id === brandId);
 
   const layoutOf = (storeId) => (db.layouts || []).find((l) => l.storeId === storeId && l.month === month);
@@ -590,12 +643,12 @@ function LayoutZone({ db, setDB, month, setMonth, toast }) {
   const onUpload = (store) => (e) => {
     const f = e.target.files[0];
     if (!f) return;
-    if (!/\.(jpg|jpeg|png|pdf)$/i.test(f.name)) { toast("僅接受圖片（jpg/png）或 PDF 檔"); e.target.value = ""; return; }
+    if (!/\.(xlsx|xls)$/i.test(f.name)) { toast("僅接受 Excel 檔（.xlsx / .xls）"); e.target.value = ""; return; }
     setBusy(store.id);
     const reader = new FileReader();
     reader.onload = async () => {
       try {
-        const url = await InventoryAPI.uploadLayout(reader.result, f.name);
+        const url = await InventoryAPI.uploadLayout(reader.result, f.name, brand ? brand.name : "");
         const rec = { storeId: store.id, month, fileName: f.name, fileUrl: url, uploadedAt: new Date().toISOString().slice(0, 10) };
         setDB((d) => ({ ...d, layouts: [...(d.layouts || []).filter((l) => !(l.storeId === store.id && l.month === month)), rec] }));
         toast(`已上傳「${store.name}」Layout 圖 ✔`);
@@ -609,28 +662,24 @@ function LayoutZone({ db, setDB, month, setMonth, toast }) {
     reader.readAsDataURL(f);
   };
 
-  // 本月總表下載：依序觸發下載本品牌本月所有已上傳的 Layout 圖
-  const downloadAll = () => {
+  // 本月總表下載：一店一檔，不合併，交由伺服器端打包成 zip（或本機模式依序下載）
+  const downloadAll = async () => {
     const list = (db.layouts || []).filter((l) => l.month === month && db.stores.some((s) => s.id === l.storeId && s.brandId === brandId));
-    if (list.length === 0) { toast("本月尚無已上傳的 Layout 圖"); return; }
-    list.forEach((l, i) => {
-      setTimeout(() => {
-        const a = document.createElement("a");
-        a.href = l.fileUrl; a.download = l.fileName; a.target = "_blank"; a.rel = "noreferrer";
-        document.body.appendChild(a); a.click(); document.body.removeChild(a);
-      }, i * 400); // 間隔觸發，降低瀏覽器擋下多重下載的機率
-    });
-    toast(`已觸發下載本月 ${list.length} 份 Layout 圖`);
+    setDownloadingAll(true);
+    try { await bulkDownloadFiles(list, `${brand ? brand.name : ""}Layout圖_${month}`, toast); }
+    finally { setDownloadingAll(false); }
   };
 
   return (
-    <SectionCard title="🗺️ Layout 圖" subtitle="上傳／下載各店鋪賣場配置圖（圖片或 PDF）；只列主店，不含分倉">
+    <SectionCard title="🗺️ Layout 圖" subtitle="上傳／下載各店鋪賣場配置圖（Excel 原檔）；只列主店，不含分倉">
       <div className="flex flex-wrap gap-3 items-center">
         <BrandStoreSelect db={db} brandId={brandId} month={month} onBrand={setBrandId} showStore={false} />
         <input type="month" value={month} onChange={(e) => setMonth(e.target.value)} title="盤點月份"
           className="px-3 py-2 border border-slate-300 rounded-lg text-sm bg-white focus:ring-2 focus:ring-blue-500 outline-none" />
-        <button onClick={downloadAll} disabled={!brandId}
-          className="px-3 py-2 bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-400 text-white text-sm rounded-lg">⬇ 本月總表下載</button>
+        <button onClick={downloadAll} disabled={downloadingAll || !brandId}
+          className="px-3 py-2 bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-400 text-white text-sm rounded-lg">
+          {downloadingAll ? "下載中…" : "⬇ 本月總表下載"}
+        </button>
       </div>
 
       {brandId && (
@@ -668,7 +717,7 @@ function LayoutZone({ db, setDB, month, setMonth, toast }) {
                       <div className="flex items-center gap-2">
                         <label className={"inline-block px-3 py-1.5 text-white text-sm rounded-lg cursor-pointer " + (busy === s.id ? "bg-slate-400" : "bg-blue-600 hover:bg-blue-700")}>
                           {busy === s.id ? "上傳中…" : "⬆ 上傳"}
-                          <input type="file" accept=".jpg,.jpeg,.png,.pdf" className="hidden" disabled={busy === s.id} onChange={onUpload(s)} />
+                          <input type="file" accept=".xlsx,.xls" className="hidden" disabled={busy === s.id} onChange={onUpload(s)} />
                         </label>
                         {l && <a href={l.fileUrl} target="_blank" rel="noreferrer" className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-sm rounded-lg">⬇ 下載</a>}
                       </div>
@@ -1813,7 +1862,7 @@ function MaintainZone({ db, setDB, month, setMonth, toast }) {
           const reader = new FileReader();
           reader.onload = async () => {
             try {
-              const url = await InventoryAPI.uploadManual(reader.result, f.name);
+              const url = await InventoryAPI.uploadManual(reader.result, f.name, brandObj ? brandObj.name : "");
               const rec = { brandId, fileName: f.name, fileUrl: url, uploadedAt: new Date().toISOString().slice(0, 10) };
               setDB((d) => ({ ...d, manuals: [...(d.manuals || []).filter((m) => m.brandId !== brandId), rec] }));
               toast(`已上傳「${brandObj ? brandObj.name : ""}」盤點手冊 ✔`);

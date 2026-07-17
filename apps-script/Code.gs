@@ -11,7 +11,7 @@
 // 盤點照片要存放的 Google Drive 資料夾 ID（即使用者提供的資料夾）
 var PHOTO_FOLDER_ID = "1h9qjSAx2-sojs5_uP307qmBUvw-XiDhn";
 
-var TABS = ["brands", "stores", "staff", "prices", "records", "uploads", "aliases", "manuals", "layouts"];
+var TABS = ["brands", "stores", "staff", "prices", "records", "uploads", "aliases", "manuals", "layouts", "countTotals"];
 
 // 分頁顯示名稱（程式內部仍用英文代碼；工作表分頁改中文，方便人工檢視）
 var SHEET_NAMES = {
@@ -24,7 +24,8 @@ var SHEET_NAMES = {
   masters: "主檔索引",
   aliases: "店名對應",
   manuals: "盤點手冊",
-  layouts: "Layout圖"
+  layouts: "Layout圖",
+  countTotals: "盤點總表"
 };
 
 function doGet(e) {
@@ -47,9 +48,13 @@ function doPost(e) {
     case "uploadPhoto":
       return jsonOut({ ok: true, url: uploadPhoto(body.dataUrl, body.filename) });
     case "uploadManual":
-      return jsonOut({ ok: true, url: uploadManual(body.dataUrl, body.filename) });
+      return jsonOut({ ok: true, url: uploadManual(body.dataUrl, body.filename, body.brandName) });
     case "uploadLayout":
-      return jsonOut({ ok: true, url: uploadLayout(body.dataUrl, body.filename) });
+      return jsonOut({ ok: true, url: uploadLayout(body.dataUrl, body.filename, body.brandName) });
+    case "uploadCountSheet":
+      return jsonOut({ ok: true, url: uploadCountSheet(body.dataUrl, body.filename, body.brandName) });
+    case "zipFiles":
+      return jsonOut(zipFiles(body.files, body.zipName));
     case "putMaster":
       putMaster(body.rec);
       return jsonOut({ ok: true });
@@ -120,10 +125,25 @@ function appendRow(tab, row) {
 
 var MAX_PHOTO_BYTES = 10 * 1024 * 1024;  // 單張照片上限 10MB
 var MAX_MANUAL_BYTES = 20 * 1024 * 1024; // 盤點手冊 PDF 上限 20MB
-var MAX_LAYOUT_BYTES = 15 * 1024 * 1024; // Layout 圖上限 15MB
+var MAX_LAYOUT_BYTES = 15 * 1024 * 1024; // Layout 圖上限 15MB（Excel 原檔）
+var MAX_COUNT_BYTES = 15 * 1024 * 1024;  // 盤點總表上限 15MB（Excel 原檔，一店一檔不合併）
 
-// 共用：驗證並存進 Google Drive，回傳可存取連結
-function uploadToDrive(dataUrl, filename, isAllowedType, maxBytes, rejectMsg) {
+// 資料夾底下取得指定名稱的子資料夾，不存在就建立（Drive 無原生 mkdir -p）
+function getOrCreateFolder(parentFolder, name) {
+  var it = parentFolder.getFoldersByName(name);
+  if (it.hasNext()) return it.next();
+  return parentFolder.createFolder(name);
+}
+
+// 品牌／檔案類型對應的 Drive 資料夾：根目錄 → 品牌 → Layout圖／盤點總表／盤點手冊
+function getBrandSubfolder(brandName, subName) {
+  var root = DriveApp.getFolderById(PHOTO_FOLDER_ID);
+  var brandFolder = getOrCreateFolder(root, brandName || "未分類品牌");
+  return getOrCreateFolder(brandFolder, subName);
+}
+
+// 共用：驗證並存進 Google Drive（可指定資料夾），回傳可存取連結
+function uploadToDrive(folder, dataUrl, filename, isAllowedType, maxBytes, rejectMsg) {
   var parts = dataUrl.split(",");
   var meta = parts[0]; // 例：data:image/jpeg;base64
   var contentType = meta.substring(meta.indexOf(":") + 1, meta.indexOf(";"));
@@ -132,21 +152,57 @@ function uploadToDrive(dataUrl, filename, isAllowedType, maxBytes, rejectMsg) {
   var bytes = Utilities.base64Decode(parts[1]);
   if (bytes.length > maxBytes) throw new Error("檔案過大，上限 " + Math.round(maxBytes / 1024 / 1024) + "MB");
   var blob = Utilities.newBlob(bytes, contentType, filename || "file");
-  var file = DriveApp.getFolderById(PHOTO_FOLDER_ID).createFile(blob);
+  var file = folder.createFile(blob);
   file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
   return "https://drive.google.com/uc?id=" + file.getId();
 }
 
 function uploadPhoto(dataUrl, filename) {
-  return uploadToDrive(dataUrl, filename, function (ct) { return ct.indexOf("image/") === 0; }, MAX_PHOTO_BYTES, "僅允許上傳影像檔");
+  var folder = DriveApp.getFolderById(PHOTO_FOLDER_ID);
+  return uploadToDrive(folder, dataUrl, filename, function (ct) { return ct.indexOf("image/") === 0; }, MAX_PHOTO_BYTES, "僅允許上傳影像檔");
 }
 
-function uploadManual(dataUrl, filename) {
-  return uploadToDrive(dataUrl, filename, function (ct) { return ct === "application/pdf"; }, MAX_MANUAL_BYTES, "僅允許上傳 PDF 檔");
+function uploadManual(dataUrl, filename, brandName) {
+  var folder = getBrandSubfolder(brandName, "盤點手冊");
+  return uploadToDrive(folder, dataUrl, filename, function (ct) { return ct === "application/pdf"; }, MAX_MANUAL_BYTES, "僅允許上傳 PDF 檔");
 }
 
-function uploadLayout(dataUrl, filename) {
-  return uploadToDrive(dataUrl, filename, function (ct) { return ct.indexOf("image/") === 0 || ct === "application/pdf"; }, MAX_LAYOUT_BYTES, "僅允許上傳圖片或 PDF 檔");
+// Layout 圖為 Excel 原檔（賣場配置圖，不可解析、需保留原始檔案格式）
+function uploadLayout(dataUrl, filename, brandName) {
+  var folder = getBrandSubfolder(brandName, "Layout圖");
+  return uploadToDrive(folder, dataUrl, filename, isExcelType, MAX_LAYOUT_BYTES, "僅允許上傳 Excel 檔（.xlsx / .xls）");
+}
+
+// 盤點總表為 Excel 原檔，一家店一份，保留原始檔案（不解析成列資料，只由前端擷取「合計盤點總數」）
+function uploadCountSheet(dataUrl, filename, brandName) {
+  var folder = getBrandSubfolder(brandName, "盤點總表");
+  return uploadToDrive(folder, dataUrl, filename, isExcelType, MAX_COUNT_BYTES, "僅允許上傳 Excel 檔（.xlsx / .xls）");
+}
+
+// 瀏覽器對 .xls/.xlsx 回報的 contentType 不一定精準，含 octet-stream 也放行（副檔名已在前端檢查過）
+function isExcelType(ct) {
+  return ct.indexOf("spreadsheet") >= 0 || ct.indexOf("ms-excel") >= 0 || ct === "application/octet-stream";
+}
+
+// 從 "https://drive.google.com/uc?id=XXXX" 取出 Drive 檔案 ID
+function extractDriveId(url) {
+  var m = String(url || "").match(/[?&]id=([^&]+)/);
+  return m ? m[1] : null;
+}
+
+// 批次打包下載：files = [{fileUrl, fileName}]；伺服器端直接讀 Drive 檔案打包，避免瀏覽器端 CORS 限制
+function zipFiles(files, zipName) {
+  if (!files || files.length === 0) return { error: "沒有可下載的檔案" };
+  var blobs = [];
+  files.forEach(function (f) {
+    var id = extractDriveId(f.fileUrl);
+    if (!id) return;
+    var blob = DriveApp.getFileById(id).getBlob();
+    blobs.push(blob.setName(f.fileName || blob.getName()));
+  });
+  if (blobs.length === 0) return { error: "找不到可下載的檔案" };
+  var zipBlob = Utilities.zip(blobs, (zipName || "下載") + ".zip");
+  return { ok: true, filename: zipBlob.getName(), base64: Utilities.base64Encode(zipBlob.getBytes()) };
 }
 
 /* ---------- 主檔／庫存檔（資料量大：一個資料集 = 一個工作表，一列一筆） ----------
