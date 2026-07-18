@@ -62,7 +62,8 @@ const seedDB = {
     },
   ],
   uploads: [], // 上傳區：客戶主檔上傳紀錄
-  aliases: [], // 店名對應記憶：{ brandId, key(正規化欄標題), storeId }
+  aliases: [], // 店名對應記憶（庫存檔用）：{ brandId, key(正規化欄標題), storeId }
+  categoryAliases: [], // 種類對應記憶（主檔用，跟店鋪對應分開存）：{ brandId, key(正規化欄標題), category }
   manuals: [], // 盤點手冊：{ brandId, fileName, fileUrl, uploadedAt }（一品牌一份，不分店鋪種類）
   layouts: [], // Layout 圖：{ storeId, month, fileName, fileUrl, uploadedAt }（一店一份，只列主店不含分倉，原檔存 Drive）
   countTotals: [], // 盤點總表：{ storeId, month, fileName, fileUrl, total, uploadedAt }（一店一檔，原檔存 Drive，只擷取「合計盤點總數」）
@@ -72,7 +73,7 @@ const seedDB = {
  * 維護類資料（單一管理者編輯）→ 整表覆蓋（ADMIN_TABS）
  * 盤點/上傳紀錄（多裝置同時新增）→ 逐筆 append，避免互相覆蓋
  */
-const ADMIN_TABS = ["brands", "stores", "staff", "prices", "aliases", "manuals", "layouts", "countTotals"];
+const ADMIN_TABS = ["brands", "stores", "staff", "prices", "aliases", "categoryAliases", "manuals", "layouts", "countTotals"];
 const ALL_TABS = [...ADMIN_TABS, "records", "uploads"];
 function seed() { return JSON.parse(JSON.stringify(seedDB)); }
 
@@ -979,7 +980,8 @@ function UploadZone({ db, setDB, month, toast, brandId }) {
   const [storeCol, setStoreCol] = useState("");        // 哪一欄對應店鋪
   const [matchBy, setMatchBy] = useState("code");      // 以店鋪代碼或名稱對應
   const [colMap, setColMap] = useState({});            // 標準欄位 → 客戶檔來源欄
-  const [colStore, setColStore] = useState({});        // 歐聖：客戶檔店名欄 → storeId（自動比對＋手動調整）
+  const [colStore, setColStore] = useState({});        // 歐聖：客戶檔店名欄 → storeId（庫存檔用，自動比對＋手動調整）
+  const [colCat, setColCat] = useState({});            // 歐聖：客戶檔店名欄 → 店鋪種類（主檔用；主檔以種類為單位，主店與分倉視為同一種類）
   const [busy, setBusy] = useState(false);
   const isStock = fileType === "stock";
   const stores = sortStoresByName(db.stores.filter((s) => s.brandId === brandId && s.month === month));
@@ -992,6 +994,13 @@ function UploadZone({ db, setDB, month, toast, brandId }) {
     const a = aliases.find((x) => x.brandId === brandId && x.key === key);
     if (a) { const s = stores.find((x) => x.id === a.storeId); if (s) return s; }
     return findStoreByEnName(stores, header);
+  };
+
+  // 解析店名欄 → 店鋪種類：只查記憶(categoryAliases)，主檔以種類為單位、不需模糊比對到特定店鋪
+  const resolveCategory = (header) => {
+    const key = normName(header);
+    const a = (db.categoryAliases || []).find((x) => x.brandId === brandId && x.key === key);
+    return a ? a.category : "";
   };
 
   // 依標準欄位自動猜測對應的來源欄
@@ -1014,7 +1023,7 @@ function UploadZone({ db, setDB, month, toast, brandId }) {
     const f = e.target.files[0];
     if (!f) return;
     if (!/\.(xlsx|xls)$/i.test(f.name)) { toast("僅接受 Excel 檔（.xlsx / .xls）"); e.target.value = ""; return; }
-    setFile(f); setParsed(null); setStoreCol(""); setColStore({});
+    setFile(f); setParsed(null); setStoreCol(""); setColStore({}); setColCat({});
     try {
       const { headers, rows } = await readXLSX(f);
       if (headers.length === 0 || rows.length === 0) { toast("檔案沒有可讀取的資料列"); return; }
@@ -1022,11 +1031,14 @@ function UploadZone({ db, setDB, month, toast, brandId }) {
       const guess = headers.find((h) => /店|門市|store|shop|代碼|code/i.test(h));
       setStoreCol(guess || headers[0]);
       setColMap(guessMap(headers));
-      // 歐聖：對每個店名/倉別欄做自動比對，預填對應下拉
+      // 歐聖：對每個店名/倉別欄做自動比對，預填對應下拉（庫存檔→店鋪；主檔→種類，兩者都先算好，切換用途不用重上傳）
       if (isOshengBrand(brand)) {
-        const cs = {};
-        headers.filter((h) => !OSHENG_FIXED_COLS.includes(h)).forEach((h) => { const s = resolveStore(h); cs[h] = s ? s.id : ""; });
-        setColStore(cs);
+        const cs = {}; const cc = {};
+        headers.filter((h) => !OSHENG_FIXED_COLS.includes(h)).forEach((h) => {
+          const s = resolveStore(h); cs[h] = s ? s.id : "";
+          cc[h] = resolveCategory(h);
+        });
+        setColStore(cs); setColCat(cc);
       }
     } catch (err) { toast("Excel 解析失敗，請確認檔案格式"); }
   };
@@ -1042,20 +1054,22 @@ function UploadZone({ db, setDB, month, toast, brandId }) {
 
   // 寫入上傳紀錄與索引、記憶店名對應、提示、清空
   // 同檔名重新上傳：先移除同檔名的舊上傳紀錄（主檔資料已於 produce 前用 deleteMastersByFile 清除）
-  const finalize = async (addedIdx, matched, unmatched, label, newAliases) => {
+  const finalize = async (addedIdx, matched, unmatched, label, newAliases, newCategoryAliases) => {
     const uploadRec = { id: uid("U"), brandId, month, type: fileType, fileName: file.name, storeCount: matched, rowCount: parsed.rows.length, uploadedAt: new Date().toISOString().slice(0, 10) };
     const idx = (db.mastersIndex || []).filter((m) => !addedIdx.some((a) => a.storeId === m.storeId && a.month === m.month && a.type === m.type)
       && !(m.srcFile === file.name && m.month === month)); // 同檔名舊索引一併移除
     const uploads = [...db.uploads.filter((u) => !(u.fileName === file.name && u.month === month && u.brandId === brandId)), uploadRec];
     const mergedAliases = [...(db.aliases || []), ...(newAliases || [])];
-    const next = { ...db, uploads, mastersIndex: [...idx, ...addedIdx], aliases: mergedAliases };
+    const mergedCategoryAliases = [...(db.categoryAliases || []), ...(newCategoryAliases || [])];
+    const next = { ...db, uploads, mastersIndex: [...idx, ...addedIdx], aliases: mergedAliases, categoryAliases: mergedCategoryAliases };
     setDB(next);
     await InventoryAPI.saveTabs(next, ["uploads"]); // 整批覆蓋上傳紀錄（含清除同檔名舊紀錄）
     let msg = `已產製 ${matched} 個${label}（來源 ${parsed.rows.length} 筆）✔`;
     if (unmatched.length) msg += `；${unmatched.length} 個未對應（例：${unmatched.slice(0, 2).join("、")}）`;
     if (newAliases && newAliases.length) msg += `；已記住 ${newAliases.length} 筆店名對應`;
+    if (newCategoryAliases && newCategoryAliases.length) msg += `；已記住 ${newCategoryAliases.length} 筆種類對應`;
     toast(msg);
-    setFile(null); setParsed(null); setStoreCol(""); setColMap({}); setColStore({});
+    setFile(null); setParsed(null); setStoreCol(""); setColMap({}); setColStore({}); setColCat({});
   };
 
   // 一般品牌：依 storeCol 切分、colMap 對應
@@ -1112,20 +1126,27 @@ function UploadZone({ db, setDB, month, toast, brandId }) {
       storeCols.forEach((h) => { const sid = colStore[h]; if (sid) { const key = normName(h); if (!cur.some((x) => x.brandId === brandId && x.key === key && x.storeId === sid)) add.push({ brandId, key, storeId: sid }); } });
       return add;
     };
+    // 記住手動對應：把本次每個「已選種類」的欄標題存成 categoryAlias（下次自動套用；主檔專用，跟店鋪 alias 分開存）
+    const learnCategoryAliases = () => {
+      const cur = db.categoryAliases || [];
+      const add = [];
+      storeCols.forEach((h) => { const cat = colCat[h]; if (cat) { const key = normName(h); if (!cur.some((x) => x.brandId === brandId && x.key === key && x.category === cat)) add.push({ brandId, key, category: cat }); } });
+      return add;
+    };
     const chosen = (h) => stores.find((s) => s.id === colStore[h]) || null;
 
     if (!isStock) {
-      // 主檔：全部商品、數量0；依「所選店鋪的店鋪種類」各產一份主檔
+      // 主檔：全部商品、數量0；主檔以「種類」為單位產製，主店與分倉視為同一種類，不需細分到單店
       const rows = parsed.rows.map((r) => mapRow(r, "0"));
       const err = validateRows(rows); if (err) { toast(err); return; }
       const cats = new Set();
-      storeCols.forEach((h) => { const s = chosen(h); if (s && s.category) cats.add(s.category); });
-      if (cats.size === 0) { toast("找不到店鋪種類：請在下方為店名欄選擇對應店鋪，或先於維護區維護名單（店鋪種類）"); return; }
+      storeCols.forEach((h) => { const cat = colCat[h]; if (cat) cats.add(cat); });
+      if (cats.size === 0) { toast("找不到店鋪種類：請在下方為店名欄選擇對應種類"); return; }
       const srcDate = parseDateFromName(file.name);
       await InventoryAPI.deleteMastersByFile(file.name, month); // 同檔名先清空舊產出
       const addedIdx = [];
       for (const cat of cats) { await InventoryAPI.putMaster({ storeId: "CAT::" + cat, month, type: "master", srcDate, srcFile: file.name, columns: MASTER_COLS, rows }); addedIdx.push({ storeId: "CAT::" + cat, month, type: "master" }); }
-      await finalize(addedIdx, cats.size, [], `主檔（種類：${Array.from(cats).join("、")}）`, learnAliases());
+      await finalize(addedIdx, cats.size, [], `主檔（種類：${Array.from(cats).join("、")}）`, [], learnCategoryAliases());
     } else {
       // 庫存檔：每個店名/倉別欄各一份，數量帶該欄（先驗證整數）
       for (const h of storeCols) { for (const src of parsed.rows) { if (!isIntStr(src[h])) { toast(`庫存數量須為整數（欄「${h}」）`); return; } } }
@@ -1211,7 +1232,8 @@ function UploadZone({ db, setDB, month, toast, brandId }) {
 
           {parsed && osheng && (() => {
             const storeCols = parsed.headers.filter((h) => !OSHENG_FIXED_COLS.includes(h));
-            const matchedCnt = storeCols.filter((h) => colStore[h]).length;
+            const categoryOptions = distinctVals(stores, "category"); // 本品牌本月實際出現過的種類（動態，非寫死）
+            const matchedCnt = isStock ? storeCols.filter((h) => colStore[h]).length : storeCols.filter((h) => colCat[h]).length;
             return (
               <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 text-sm text-slate-700 space-y-3">
                 <div className="space-y-1">
@@ -1219,22 +1241,34 @@ function UploadZone({ db, setDB, month, toast, brandId }) {
                   <p className="text-xs">商品編號＝barcode＝<b>商品條碼</b>；物品名稱＝<b>STYLENUMBER＋顏色＋尺寸</b>；品項平均成本＝<b>零售價</b>；舊商品編號2 空白。{isStock ? "庫存數量帶各店欄數字（須整數）。" : "主檔庫存數量帶 0。"}</p>
                 </div>
                 <div>
-                  <p className="text-sm font-medium mb-2">店名對應（自動比對 {matchedCnt}/{storeCols.length}；可手動調整，送出後記住下次自動套用）</p>
+                  <p className="text-sm font-medium mb-2">
+                    {isStock
+                      ? `店名對應（自動比對 ${matchedCnt}/${storeCols.length}；可手動調整，送出後記住下次自動套用）`
+                      : `店鋪種類對應（自動比對 ${matchedCnt}/${storeCols.length}；主檔以種類為單位產製，主店與分倉視為同一種類，可手動調整，送出後記住下次自動套用）`}
+                  </p>
                   <div className="max-h-72 overflow-y-auto border border-amber-200 rounded-lg bg-white">
                     <table className="w-full text-xs">
                       <thead className="sticky top-0 bg-slate-50">
-                        <tr className="text-left text-slate-500 border-b"><th className="py-1.5 px-2">客戶檔店名欄</th><th className="py-1.5 px-2">對應店鋪（種類）</th></tr>
+                        <tr className="text-left text-slate-500 border-b"><th className="py-1.5 px-2">客戶檔店名欄</th><th className="py-1.5 px-2">{isStock ? "對應店鋪（種類）" : "對應種類"}</th></tr>
                       </thead>
                       <tbody>
                         {storeCols.map((h) => (
-                          <tr key={h} className={"border-b last:border-0 " + (colStore[h] ? "" : "bg-red-50")}>
+                          <tr key={h} className={"border-b last:border-0 " + ((isStock ? colStore[h] : colCat[h]) ? "" : "bg-red-50")}>
                             <td className="py-1 px-2 font-mono">{h}</td>
                             <td className="py-1 px-2">
-                              <select value={colStore[h] || ""} onChange={(e) => setColStore({ ...colStore, [h]: e.target.value })}
-                                className={"w-full px-2 py-1 border rounded " + (colStore[h] ? "border-slate-200" : "border-red-300")}>
-                                <option value="">— 未對應 —</option>
-                                {stores.map((s) => <option key={s.id} value={s.id}>{s.code} {s.name}{s.category ? `（${s.category}）` : ""}</option>)}
-                              </select>
+                              {isStock ? (
+                                <select value={colStore[h] || ""} onChange={(e) => setColStore({ ...colStore, [h]: e.target.value })}
+                                  className={"w-full px-2 py-1 border rounded " + (colStore[h] ? "border-slate-200" : "border-red-300")}>
+                                  <option value="">— 未對應 —</option>
+                                  {stores.map((s) => <option key={s.id} value={s.id}>{s.code} {s.name}{s.category ? `（${s.category}）` : ""}</option>)}
+                                </select>
+                              ) : (
+                                <select value={colCat[h] || ""} onChange={(e) => setColCat({ ...colCat, [h]: e.target.value })}
+                                  className={"w-full px-2 py-1 border rounded " + (colCat[h] ? "border-slate-200" : "border-red-300")}>
+                                  <option value="">— 未對應 —</option>
+                                  {categoryOptions.map((c) => <option key={c} value={c}>{c}</option>)}
+                                </select>
+                              )}
                             </td>
                           </tr>
                         ))}
