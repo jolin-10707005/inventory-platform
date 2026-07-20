@@ -2040,14 +2040,23 @@ function App() {
     { id: "maintain", label: "🛠 維護區", roles: ["manager"] },
   ];
 
-  // 初次載入：從後端讀取；後端尚無資料則寫入範例種子
+  // 初次載入：先顯示上次的雲端資料快照（若有），畫面立刻可用；背景同時抓最新資料，抓到再悄悄換上
+  // （stale-while-revalidate，避免每次進站都要等 Apps Script／Sheets 讀完才看得到畫面）
   useEffect(() => {
+    const cached = InventoryAPI.loadCachedDB();
+    if (cached && cached.brands && cached.brands.length) {
+      fromPollRef.current = true; // 快取資料不算使用者編輯，不要回寫後端
+      setDB(cached);
+      setReady(true);
+    }
     (async () => {
       let d = await InventoryAPI.loadDB();
       if (!d || !d.brands || d.brands.length === 0) {
         d = seed();
         await InventoryAPI.saveTabs(d, ALL_TABS);
       }
+      InventoryAPI.cacheDB(d);
+      fromPollRef.current = true; // 剛讀到的最新資料也不算使用者編輯
       setDB(d);
       setReady(true);
     })();
@@ -2073,7 +2082,7 @@ function App() {
       if (Date.now() - lastEditRef.current < 3000) return;
       try {
         const d = await InventoryAPI.loadDB();
-        if (d && d.brands) { fromPollRef.current = true; setDB(d); }
+        if (d && d.brands) { InventoryAPI.cacheDB(d); fromPollRef.current = true; setDB(d); }
       } catch (e) { /* 忽略單次刷新失敗 */ }
     }, 15000);
     return () => clearInterval(id);
@@ -2084,7 +2093,7 @@ function App() {
     setSync(true);
     try {
       const d = await InventoryAPI.loadDB();
-      if (d && d.brands) { fromPollRef.current = true; setDB(d); toast("已更新為最新資料 ✔"); }
+      if (d && d.brands) { InventoryAPI.cacheDB(d); fromPollRef.current = true; setDB(d); toast("已更新為最新資料 ✔"); }
     } catch (e) { toast("更新失敗，請確認網路"); } finally { setSync(false); }
   };
 

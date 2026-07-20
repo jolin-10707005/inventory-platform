@@ -17,6 +17,7 @@ const API_CONFIG = {
 
 const _DB_KEY = "inv-platform-db-v1";
 const _MASTERS_KEY = "inv-platform-masters-v1";
+const _CLOUD_CACHE_KEY = "inv-platform-cloud-cache-v1";
 
 const InventoryAPI = {
   /** 是否為雲端（Google Sheets）模式 */
@@ -37,6 +38,22 @@ const InventoryAPI = {
       }
     } catch (e) { /* 資料毀損時回退種子 */ }
     return null;
+  },
+
+  /** 讀取上次成功抓到的雲端資料快照（同步、不打網路）。用於畫面先顯示舊資料、背景再更新最新版（stale-while-revalidate），
+   *  避免每次進站都要等 Apps Script／Sheets 讀完才看得到畫面。本機模式不需要，回傳 null */
+  loadCachedDB() {
+    if (!this.cloud()) return null;
+    try {
+      const raw = localStorage.getItem(_CLOUD_CACHE_KEY);
+      return raw ? JSON.parse(raw) : null;
+    } catch (e) { return null; }
+  },
+
+  /** 每次成功抓到雲端最新資料後呼叫，更新快取供下次進站先顯示 */
+  cacheDB(db) {
+    if (!this.cloud()) return;
+    try { localStorage.setItem(_CLOUD_CACHE_KEY, JSON.stringify(db)); } catch (e) { /* 快取失敗不影響正常流程 */ }
   },
 
   /** 讀取單一店鋪主檔（含完整資料列）。回傳 { columns, rows } 或 null */

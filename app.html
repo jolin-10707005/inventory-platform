@@ -14,9 +14,11 @@
 <body class="bg-slate-100 min-h-screen">
   <div id="root"></div>
   <script>
-    // 動態載入並加上時間戳，避免 GitHub Pages 快取到舊版（方便邊測試邊改，重整即最新）
+    // 動態載入 api.js / script.js；版號僅在實際變更這兩支檔案、要部署新版時才手動 +1
+    // （改成手動版號而非每次用時間戳，是為了讓瀏覽器能快取，加快重複造訪的載入速度；
+    //   注意：忘記在部署新版時 +1，使用者會吃到舊快取）
     (function () {
-      var v = Date.now();
+      var v = "1";
       var s1 = document.createElement('script');
       s1.src = 'api.js?v=' + v;
       s1.onload = function () {
