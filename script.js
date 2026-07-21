@@ -9,6 +9,10 @@
  * 權限：盤點人員僅可使用「下載區 / 填寫區」，管理者可使用全部功能
  * 資料：透過 api.js 存取（localStorage 或 Google Sheets/Drive，可切換）
  *       // TODO: 未來改接日翊資料庫時，只需修改 api.js（見 openspec/api-interface.json）
+ *
+ * ⚠ 這是原始碼（含 JSX）；瀏覽器實際載入、執行的是編譯過的 script.compiled.js（app.html 指定）。
+ *   改完這支檔案後，務必重新編譯（Babel + @babel/preset-react，classic runtime）產生新的
+ *   script.compiled.js 再推送，否則線上畫面不會反映這次修改。
  * ============================================================ */
 
 const { useState, useEffect, useMemo, useRef } = React;
