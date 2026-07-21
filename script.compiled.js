@@ -2005,10 +2005,14 @@ function UploadZone({
           return;
         }
       }
-      const srcDate = parseDateFromName(file.name);
-      await InventoryAPI.deleteMastersByFile(file.name, month); // 同檔名先清空舊產出
-      const addedIdx = [];
-      let matched = 0;
+      // 商品基本資料（商品編號/物品名稱/成本）每個店鋪都一樣，只組一次；各店鋪只留自己的數量陣列——
+      // 避免像過去「每個店鋪各自重送整份商品列」，商品數量一多、乘上店鋪數就爆量，單次請求太大會在半路被擋掉(CORS-like 失敗)
+      const baseRows = parsed.rows.map(src => [String(src["商品條碼"] == null ? "" : src["商品條碼"]).trim(), ["STYLENUMBER", "顏色", "尺寸"].map(k => String(src[k] == null ? "" : src[k]).trim()).filter(Boolean).join("-"), String(src["零售價"] == null ? "" : src["零售價"]).trim()]);
+      if (firstDup(baseRows.map(r => r[0]))) {
+        toast("主檔商品編號重複");
+        return;
+      }
+      const batchStores = [];
       const unmatched = [];
       for (const h of storeCols) {
         const store = chosen(h);
@@ -2016,32 +2020,32 @@ function UploadZone({
           unmatched.push(h);
           continue;
         }
-        const rows = parsed.rows.map(src => mapRow(src, String(src[h] == null || src[h] === "" ? "0" : src[h]).trim()));
-        if (firstDup(rows.map(r => r[CODE_COL]))) {
-          toast("主檔商品編號重複");
-          return;
-        }
-        await InventoryAPI.putMaster({
+        const qty = parsed.rows.map(src => String(src[h] == null || src[h] === "" ? "0" : src[h]).trim());
+        batchStores.push({
           storeId: store.id,
-          month,
-          type: "stock",
-          srcDate,
-          srcFile: file.name,
-          columns: MASTER_COLS,
-          rows
+          qty
         });
-        addedIdx.push({
-          storeId: store.id,
-          month,
-          type: "stock"
-        });
-        matched++;
       }
-      if (matched === 0) {
+      if (batchStores.length === 0) {
         toast("尚未對應任何店鋪，請在下方為店名欄選擇對應店鋪");
         return;
       }
-      await finalize(addedIdx, matched, unmatched, "庫存檔", learnAliases());
+      const srcDate = parseDateFromName(file.name);
+      await InventoryAPI.deleteMastersByFile(file.name, month); // 同檔名先清空舊產出
+      const addedStoreIds = await InventoryAPI.putMasterBatch({
+        month,
+        type: "stock",
+        srcDate,
+        srcFile: file.name,
+        baseRows,
+        stores: batchStores
+      });
+      const addedIdx = addedStoreIds.map(sid => ({
+        storeId: sid,
+        month,
+        type: "stock"
+      }));
+      await finalize(addedIdx, addedStoreIds.length, unmatched, "庫存檔", learnAliases());
     }
   };
   const produce = async () => {

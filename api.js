@@ -75,6 +75,24 @@ const InventoryAPI = {
     localStorage.setItem(_MASTERS_KEY, JSON.stringify(list));
   },
 
+  /** 批次寫入多個店鋪的主檔/庫存檔（歐聖寬表用）：baseRows=[[商品編號,物品名稱,成本],...] 只送一次（各店鋪共用），
+   *  stores=[{storeId, qty:[各列數量]}] 每店鋪只帶自己的數量陣列，不重複帶整份商品列——避免商品數×店鋪數把單次請求撐爆。
+   *  回傳成功寫入的 storeId 陣列 */
+  async putMasterBatch({ month, type, srcDate, srcFile, baseRows, stores }) {
+    if (!this.cloud()) {
+      for (const st of stores) {
+        const rows = baseRows.map((b, i) => ({
+          "商品編號": b[0], "barcode": b[0], "舊商品編號2": "",
+          "物品名稱": b[1], "庫存數量": st.qty[i], "品項平均成本": b[2],
+        }));
+        await this.putMaster({ storeId: st.storeId, month, type, srcDate, srcFile, columns: ["商品編號", "barcode", "舊商品編號2", "物品名稱", "庫存數量", "品項平均成本"], rows });
+      }
+      return stores.map((s) => s.storeId);
+    }
+    const j = await this._post({ action: "putMasterBatch", month, type, srcDate, srcFile, baseRows, stores });
+    return j.storeIds || [];
+  },
+
   /** 依來源檔名刪除主檔（同檔名重新上傳前先清空） */
   async deleteMastersByFile(srcFile, month) {
     if (this.cloud()) { await this._post({ action: "deleteMastersByFile", srcFile, month }); return; }

@@ -59,6 +59,8 @@ function doPost(e) {
     case "putMaster":
       putMaster(body.rec);
       return jsonOut({ ok: true });
+    case "putMasterBatch":
+      return jsonOut({ ok: true, storeIds: putMasterBatch(body) });
     case "deleteMastersByFile":
       return jsonOut({ ok: true, removed: deleteMastersByFile(body.srcFile, body.month) });
     default:
@@ -287,6 +289,31 @@ function putMaster(rec) {
   var ri = sh.getLastRow() + 1;
   var rg2 = sh.getRange(ri, 1, 1, MASTER_INDEX_HEADERS.length);
   rg2.setNumberFormat("@"); rg2.setValues([[rec.storeId, rec.month, rec.type, name, rec.srcDate || "", rec.srcFile || ""]]);
+}
+
+// 批次寫入多店鋪主檔/庫存檔（歐聖寬表用）：baseRows=[[商品編號,物品名稱,成本],...] 只送一次，
+// stores=[{storeId, qty:[各列數量]}] 每店鋪只帶自己的數量陣列。伺服器端在同一次執行內組回各店鋪完整列、逐一呼叫 putMaster 寫入，
+// 取代前端「每個店鋪各自重送整份商品列」的做法——商品數×店鋪數一多，單次請求會被 Google 前端擋掉（瀏覽器端看到類似 CORS 的失敗）。
+function putMasterBatch(payload) {
+  var baseRows = payload.baseRows || [];
+  var stores = payload.stores || [];
+  var storeIds = [];
+  stores.forEach(function (st) {
+    var rows = baseRows.map(function (b, i) {
+      return {
+        "商品編號": b[0], "barcode": b[0], "舊商品編號2": "",
+        "物品名稱": b[1], "庫存數量": String(st.qty[i]), "品項平均成本": b[2]
+      };
+    });
+    putMaster({
+      storeId: st.storeId, month: payload.month, type: payload.type,
+      srcDate: payload.srcDate, srcFile: payload.srcFile,
+      columns: ["商品編號", "barcode", "舊商品編號2", "物品名稱", "庫存數量", "品項平均成本"],
+      rows: rows
+    });
+    storeIds.push(st.storeId);
+  });
+  return storeIds;
 }
 
 // 依來源檔名刪除主檔（同檔名重新上傳前先清空舊產出）
