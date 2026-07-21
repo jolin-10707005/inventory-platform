@@ -1452,17 +1452,36 @@ function AnalysisZone({ db, setDB, month, setMonth, toast }) {
     const minPieces = Math.ceil(minC / unit); // 低於此件數 → 最低收費
     const md = (d) => { const s = String(d).split("-"); return s.length === 3 ? `${+s[1]}/${+s[2]}` : d; };
     const gVal = (r) => Math.round(Math.max(r.pieces * unit, minC) + (num(r.warehouse) - 1) * whF);
+    const N = viewRows.length;
+    const grand = viewRows.reduce((a, r) => a + gVal(r), 0);
     const wb = XLSX.utils.book_new();
+    const [, moStr] = month.split("-");
+    const invoiceTitle = `# ${+moStr}月請款金額-全`;
 
-    // 分頁一：彙總（含部別/主責課分攤；協盤課留空）
+    // 逐店明細列（彙總／客戶共用同一套欄位與公式）
+    const detailRow = (r, i) => {
+      const R = i + 2, wh = num(r.warehouse) || 1, g = gVal(r);
+      return [md(r.date), r.storeCode, r.storeName, r.pieces, wh,
+        { f: `(E${R}-1)*${whF}`, v: (wh - 1) * whF },
+        { f: `ROUND((IF((D${R}*${unit})<${minC},${minC},(D${R}*${unit}))+F${R}),0)`, v: g },
+        { t: "str", f: `IF(D${R}<${minPieces},"最低收費","")`, v: r.pieces < minPieces ? "最低收費" : "" }];
+    };
+    // 發票小計三列（項目/數量/金額 表頭已由呼叫端加好）：回傳 {rows, taxAmt, totalAmt}
+    const invoiceLines = (svcRef, svcAmt) => {
+      const taxAmt = Math.round(svcAmt * 0.05 * 100) / 100;
+      return [
+        ["盤點服務", 1, { f: svcRef, v: svcAmt }],
+        ["", "5%稅金", { f: `SUM(C{SVC})*0.05`, v: taxAmt }],
+        ["", "總計", { f: `SUM(C{SVC}:C{TAX})`, v: svcAmt + taxAmt }],
+      ];
+    };
+
+    // 分頁一：彙總（含部別/主責課分攤；協盤課留空；底部合計列＋發票小計）
     const H = ["盤點日期", "店點代號", "店櫃", "實盤件數", "總倉別", "倉別加計費用", "請款金額", "備註", "部別", "主責課", "人數", "金額", "協盤課", "人數", "金額", "協盤課", "人數", "金額", "協盤課", "人數", "金額", "總計"];
     const M = [H];
     viewRows.forEach((r, i) => {
       const R = i + 2, wh = num(r.warehouse) || 1, g = gVal(r);
-      M.push([md(r.date), r.storeCode, r.storeName, r.pieces, wh,
-        { f: `(E${R}-1)*${whF}`, v: (wh - 1) * whF },
-        { f: `ROUND((IF((D${R}*${unit})<${minC},${minC},(D${R}*${unit}))+F${R}),0)`, v: g },
-        { t: "str", f: `IF(D${R}<${minPieces},"最低收費","")`, v: r.pieces < minPieces ? "最低收費" : "" },
+      M.push([...detailRow(r, i),
         r.div || DEPT_TO_DIV[r.dept] || "", r.dept, r.headcount,
         { f: `ROUND((K${R}/($K${R}+$N${R}+$Q${R}+$T${R})*$G${R}),0)`, v: g },
         "", "", { f: `IF($K${R}+$N${R}+$Q${R}+$T${R}=0,0,ROUND((N${R}/($K${R}+$N${R}+$Q${R}+$T${R})*$G${R}),0))`, v: 0 },
@@ -1470,49 +1489,81 @@ function AnalysisZone({ db, setDB, month, setMonth, toast }) {
         "", "", { f: `IF($K${R}+$N${R}+$Q${R}+$T${R}=0,0,ROUND((T${R}/($K${R}+$N${R}+$Q${R}+$T${R})*$G${R}),0))`, v: 0 },
         { f: `ROUND(L${R}+O${R}+R${R}+U${R},0)`, v: g }]);
     });
+    const totalR1 = N + 2;
+    M.push(["", "", "",
+      { f: `SUM(D2:D${N + 1})`, v: viewRows.reduce((a, r) => a + r.pieces, 0) },
+      { f: `SUM(E2:E${N + 1})`, v: viewRows.reduce((a, r) => a + (num(r.warehouse) || 1), 0) },
+      { f: `SUM(F2:F${N + 1})`, v: viewRows.reduce((a, r) => a + ((num(r.warehouse) || 1) - 1) * whF, 0) },
+      { f: `SUM(G2:G${N + 1})`, v: grand },
+      "", "", "", "", "", "", "", "", "", "", "", "", "", { f: `SUM(V2:V${N + 1})`, v: grand }]);
+    M.push([]);
+    M.push([invoiceTitle]);
+    const summaryTitleRow = M.length;
+    M.push(["項目", "數量", "金額"]);
+    const summarySvcRow = M.length + 1;
+    const summaryTaxRow = summarySvcRow + 1;
+    invoiceLines(`G${totalR1}`, grand).forEach((row, idx) => {
+      const fixed = row.map((cell) => (cell && cell.f) ? { ...cell, f: cell.f.replace("{SVC}", summarySvcRow).replace("{TAX}", summaryTaxRow) } : cell);
+      M.push(fixed);
+    });
     XLSX.utils.book_append_sheet(wb, wsFromMatrix(M), "請款明細(彙總)");
 
-    // 分頁二：客戶（A–H）
-    const HC = ["盤點日期", "店點代號", "店櫃", "實盤件數", "總倉別", "倉別加計費用", "請款金額", "備註"];
-    const MC = [HC];
-    viewRows.forEach((r, i) => {
-      const R = i + 2, wh = num(r.warehouse) || 1, g = gVal(r);
-      MC.push([md(r.date), r.storeCode, r.storeName, r.pieces, wh,
-        { f: `(E${R}-1)*${whF}`, v: (wh - 1) * whF },
-        { f: `ROUND((IF((D${R}*${unit})<${minC},${minC},(D${R}*${unit}))+F${R}),0)`, v: g },
-        { t: "str", f: `IF(D${R}<${minPieces},"最低收費","")`, v: r.pieces < minPieces ? "最低收費" : "" }]);
-    });
-    XLSX.utils.book_append_sheet(wb, wsFromMatrix(MC), "請款明細(客戶)");
-
-    // 分頁三：內部（依組織：課別依序列出＋部別小計，COUNTIF/SUMIF 參照彙總分頁 + 5% 稅）
+    // 分頁二：內部（左：公司發票小計＋業務部限定發票小計；右：課別家數/金額，依既定組織順序，
+    // 金額用 4-way SUMIF——一家店的請款金額可能分給主責課或最多 3 個協盤課，全部要算進該課小計）
     const cntOf = (d) => viewRows.filter((r) => r.dept === d).length;
     const sumOf = (d) => viewRows.filter((r) => r.dept === d).reduce((a, r) => a + gVal(r), 0);
-    const grand = viewRows.reduce((a, r) => a + gVal(r), 0);
-    const MI = [["課別", "家數", "請款金額"]];
-    const deptRowIdx = {}; // 課別 → excel 列號（供部別小計 SUM）
+    const MI = [];
+    let bizSubtotalRow = null, bizSubtotalSum = 0;
     ORG.forEach((o) => {
-      const startR = MI.length + 1; // 本部第一課的 excel 列
+      const startR = MI.length + 2;
       o.depts.forEach((d) => {
-        const R = MI.length + 1;
-        deptRowIdx[d] = R;
-        MI.push([d,
-          { f: `COUNTIF('請款明細(彙總)'!$J:$J,A${R})`, v: cntOf(d) },
-          { f: `SUMIF('請款明細(彙總)'!$J:$J,A${R},'請款明細(彙總)'!$L:$L)`, v: sumOf(d) }]);
+        const R = MI.length + 2;
+        MI.push(["", "", "", "", "", d,
+          { f: `COUNTIF('請款明細(彙總)'!$J:$J,'請款明細(內部)'!$F${R})`, v: cntOf(d) },
+          { f: `SUMIF('請款明細(彙總)'!J:J,$F${R},'請款明細(彙總)'!L:L)+SUMIF('請款明細(彙總)'!M:M,$F${R},'請款明細(彙總)'!O:O)+SUMIF('請款明細(彙總)'!P:P,$F${R},'請款明細(彙總)'!R:R)+SUMIF('請款明細(彙總)'!S:S,$F${R},'請款明細(彙總)'!U:U)`, v: sumOf(d) }]);
       });
-      const endR = MI.length; // 本部最後一課的 excel 列
-      const subR = MI.length + 1;
+      const endR = MI.length + 1, subR = MI.length + 2;
       const subCnt = o.depts.reduce((a, d) => a + cntOf(d), 0);
       const subSum = o.depts.reduce((a, d) => a + sumOf(d), 0);
-      MI.push([o.div, { f: `SUM(B${startR}:B${endR})`, v: subCnt }, { f: `SUM(C${startR}:C${endR})`, v: subSum }]);
+      MI.push(["", "", "", "", "", o.div, { f: `SUM(G${startR}:G${endR})`, v: subCnt }, { f: `SUM(H${startR}:H${endR})`, v: subSum }]);
+      if (o.div === "業務部") { bizSubtotalRow = subR; bizSubtotalSum = subSum; }
     });
-    // 總計 = 各部小計加總
-    const subRows = []; let acc = 1;
-    ORG.forEach((o) => { acc += o.depts.length; acc += 1; subRows.push(acc); });
-    const totalR = MI.length + 1;
-    MI.push(["總計", { f: `${subRows.map((r) => `B${r}`).join("+")}`, v: viewRows.length }, { f: `${subRows.map((r) => `C${r}`).join("+")}`, v: grand }]);
-    MI.push(["5% 稅金", "", { f: `ROUND(C${totalR}*0.05,0)`, v: Math.round(grand * 0.05) }]);
-    MI.push(["含稅總計", "", { f: `C${totalR}+C${totalR + 1}`, v: grand + Math.round(grand * 0.05) }]);
+    const subtotalRows = []; { let r = 2; ORG.forEach((o) => { r += o.depts.length; subtotalRows.push(r); r += 1; }); }
+    MI.push(["", "", "", "", "", "總計",
+      { f: subtotalRows.map((r) => `G${r}`).join("+"), v: viewRows.length },
+      { f: subtotalRows.map((r) => `H${r}`).join("+"), v: grand }]);
+    MI.unshift(["", "", "", "", "", "課別", "家數", "請款金額"]);
+    const setLeft = (rowNum, vals) => { while (MI.length < rowNum) MI.push([]); vals.forEach((v, ci) => { MI[rowNum - 1][ci] = v; }); };
+    setLeft(1, [{ f: `'請款明細(彙總)'!C${summaryTitleRow}`, v: invoiceTitle }, "", "", "台灣歐聖股份有限公司"]);
+    setLeft(2, ["項目", "數量", "金額", "統一編號：24940192"]);
+    setLeft(3, ["盤點服務", 1, { f: `'請款明細(彙總)'!G${summarySvcRow}`, v: grand }]);
+    setLeft(4, ["", "5%稅金", { f: `SUM(C3)*0.05`, v: Math.round(grand * 0.05 * 100) / 100 }]);
+    setLeft(5, ["", "總計", { f: `SUM(C3:C4)`, v: grand + Math.round(grand * 0.05 * 100) / 100 }]);
+    setLeft(7, [`${invoiceTitle}(盤點中心業務部)`]);
+    setLeft(8, ["項目", "數量", "金額"]);
+    setLeft(9, ["盤點服務", 1, { f: `H${bizSubtotalRow}`, v: bizSubtotalSum }]);
+    setLeft(10, ["", "5%稅金", { f: `SUM(C9)*0.05`, v: Math.round(bizSubtotalSum * 0.05 * 100) / 100 }]);
+    setLeft(11, ["", "總計", { f: `SUM(C9:C10)`, v: bizSubtotalSum + Math.round(bizSubtotalSum * 0.05 * 100) / 100 }]);
     XLSX.utils.book_append_sheet(wb, wsFromMatrix(MI), "請款明細(內部)");
+
+    // 分頁三：客戶（A–H，同彙總欄位與公式；底部合計列＋發票小計，自己欄位加總、不跨分頁引用）
+    const HC = ["盤點日期", "店點代號", "店櫃", "實盤件數", "總倉別", "倉別加計費用", "請款金額", "備註"];
+    const MC = [HC];
+    viewRows.forEach((r, i) => MC.push(detailRow(r, i)));
+    const totalR3 = N + 2;
+    MC.push(["", "", "",
+      { f: `SUM(D2:D${N + 1})`, v: viewRows.reduce((a, r) => a + r.pieces, 0) },
+      { f: `SUM(E2:E${N + 1})`, v: viewRows.reduce((a, r) => a + (num(r.warehouse) || 1), 0) },
+      { f: `SUM(F2:F${N + 1})`, v: viewRows.reduce((a, r) => a + ((num(r.warehouse) || 1) - 1) * whF, 0) },
+      { f: `SUM(G2:G${N + 1})`, v: grand }, ""]);
+    MC.push([]);
+    MC.push([invoiceTitle]);
+    const custSvcRow = MC.length + 1, custTaxRow = custSvcRow + 1;
+    invoiceLines(`G${totalR3}`, grand).forEach((row, idx) => {
+      const fixed = row.map((cell) => (cell && cell.f) ? { ...cell, f: cell.f.replace("{SVC}", custSvcRow).replace("{TAX}", custTaxRow) } : cell);
+      MC.push(fixed);
+    });
+    XLSX.utils.book_append_sheet(wb, wsFromMatrix(MC), "請款明細(客戶)");
 
     XLSX.writeFile(wb, `歐聖發票明細${month}-彙總.xlsx`);
     toast("歐聖請款（3 分頁、含公式）已匯出 ✔");
