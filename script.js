@@ -43,8 +43,9 @@ const seedDB = {
   ],
   // 單價設定：一個品牌一個價。priceType = "piece"（依件數）或 "hour"（依人時）
   // 英斯伯(B02)另有 docFee(文件處理費)、otFee(超時費)，每場加收
+  // 歐聖(B01)另有 costRate(專員成本，元/時)，供作業分析「損益分析」分頁算成本/毛利
   prices: [
-    { brandId: "B01", priceType: "piece", unitPrice: 2.2, minCharge: 5000, whFee: 500 },
+    { brandId: "B01", priceType: "piece", unitPrice: 2.2, minCharge: 5000, whFee: 500, costRate: 315 },
     { brandId: "B02", priceType: "hour", unitPrice: 320, docFee: 500, otFee: 200 },
     { brandId: "B03", priceType: "piece", unitPrice: 0.6 },
   ],
@@ -71,13 +72,14 @@ const seedDB = {
   manuals: [], // 盤點手冊：{ brandId, fileName, fileUrl, uploadedAt }（一品牌一份，不分店鋪種類）
   layouts: [], // Layout 圖：{ storeId, month, fileName, fileUrl, uploadedAt }（一店一份，只列主店不含分倉，原檔存 Drive）
   countTotals: [], // 盤點總表：{ storeId, month, fileName, fileUrl, total, uploadedAt }（一店一檔，原檔存 Drive，只擷取「合計盤點總數」）
+  opsMargins: [], // 作業分析「損益分析」歷史毛利%：{ brandId, storeId, month, marginPercent }，每次匯出時存當月各店毛利%，供下個月匯出時查「上期毛利%」
 };
 
 /* ---------------- 資料存取（透過 api.js 抽象層） ----------------
  * 維護類資料（單一管理者編輯）→ 整表覆蓋（ADMIN_TABS）
  * 盤點/上傳紀錄（多裝置同時新增）→ 逐筆 append，避免互相覆蓋
  */
-const ADMIN_TABS = ["brands", "stores", "staff", "prices", "aliases", "categoryAliases", "manuals", "layouts", "countTotals"];
+const ADMIN_TABS = ["brands", "stores", "staff", "prices", "aliases", "categoryAliases", "manuals", "layouts", "countTotals", "opsMargins"];
 const ALL_TABS = [...ADMIN_TABS, "records", "uploads"];
 function seed() { return JSON.parse(JSON.stringify(seedDB)); }
 
@@ -94,6 +96,21 @@ function calcHours(start, end) {
   let mins = eh * 60 + em - (sh * 60 + sm);
   if (mins < 0) mins += 24 * 60;
   return Math.round((mins / 60) * 100) / 100;
+}
+
+// "YYYY-MM-DD" → Excel 日期序號（1899-12-30 為第 0 天，含 1900 閏年 bug 修正的標準算法）；轉出檔要用真正的日期格式，不能是純文字
+function dateToExcelSerial(dateStr) {
+  if (!dateStr) return null;
+  const d = new Date(dateStr + "T00:00:00Z");
+  if (isNaN(d.getTime())) return null;
+  const epoch = Date.UTC(1899, 11, 30);
+  return Math.round((d.getTime() - epoch) / 86400000);
+}
+// "H:MM" 文字時間 → Excel 時間序號（一天的比例 0~1），轉出檔要用真正的時間格式
+function timeStrToFrac(timeStr) {
+  const m = String(timeStr || "").match(/^(\d{1,2}):(\d{2})$/);
+  if (!m) return null;
+  return (Number(m[1]) * 60 + Number(m[2])) / 1440;
 }
 
 // 後端（Google Sheets 純文字格式）讀回的數值/布林為字串，統一轉型
@@ -136,13 +153,18 @@ function exportXLSX(filename, sheetName, aoa, opts) {
   XLSX.writeFile(wb, filename);
 }
 
-// 由二維陣列建工作表；儲存格 {f:"公式", v:快取值} 寫成 Excel 公式（保留公式、開檔即顯示值、編輯可重算）
+// 由二維陣列建工作表；儲存格 {f:"公式", v:快取值, z:數字格式} 寫成 Excel 公式（保留公式、開檔即顯示值、編輯可重算）；
+// {v:數字, z:數字格式} 用於日期/時間等「非公式但要用特定格式顯示」的欄位（z 例："yyyy-mm-dd"、"h:mm"）
 function wsFromMatrix(matrix) {
   const ws = {}; let maxC = 0;
   matrix.forEach((row, r) => row.forEach((cell, c) => {
     const a = XLSX.utils.encode_cell({ r, c });
-    if (cell && typeof cell === "object" && "f" in cell) ws[a] = { t: cell.t || "n", f: cell.f, v: (cell.v == null ? 0 : cell.v) };
-    else if (typeof cell === "number") ws[a] = { t: "n", v: cell };
+    if (cell && typeof cell === "object" && "f" in cell) {
+      ws[a] = { t: cell.t || "n", f: cell.f, v: (cell.v == null ? 0 : cell.v) };
+      if (cell.z) ws[a].z = cell.z;
+    } else if (cell && typeof cell === "object" && "z" in cell) {
+      ws[a] = { t: "n", v: (cell.v == null ? 0 : cell.v), z: cell.z };
+    } else if (typeof cell === "number") ws[a] = { t: "n", v: cell };
     else ws[a] = { t: "s", v: cell == null ? "" : String(cell) };
     if (c > maxC) maxC = c;
   }));
@@ -1384,7 +1406,7 @@ function UploadZone({ db, setDB, month, toast, brandId }) {
  *    [COMPUTED] 請款金額 = 依單價設定：
  *               依件數：件數 × 單價；依人時：時數 × 人數 × 單價
  * ============================================================ */
-function AnalysisZone({ db, month, setMonth, toast }) {
+function AnalysisZone({ db, setDB, month, setMonth, toast }) {
   const [brandId, setBrandId] = useState("");
   const [filters, setFilters] = useState({});
   const setF = (k, v) => setFilters((p) => ({ ...p, [k]: v }));
@@ -1509,11 +1531,16 @@ function AnalysisZone({ db, month, setMonth, toast }) {
     toast("請款資料 Excel 已匯出 ✔");
   };
 
-  // 匯出作業分析（多分頁、比照範本、保留 Excel 公式，可自行調整重算）
+  // 匯出作業分析：歐聖用比照範本的 4 分頁格式；其他品牌／未篩選單一品牌時維持原 2 分頁格式
   const exportOps = () => {
     if (viewRows.length === 0) { toast("目前沒有可匯出的資料"); return; }
+    if (osheng) { exportOpsOsheng(); return; }
+    exportOpsGeneric();
+  };
+
+  // 舊格式（非歐聖）：各店概要 + 盤點效率，公式用 TIMEVALUE 解析文字時間
+  const exportOpsGeneric = () => {
     const wb = XLSX.utils.book_new();
-    // 分頁一：各店概要
     const gH = ["日期", "主責課", "店號", "店名", "盤點人數", "實盤件數", "進店時間", "存貨開始盤點時間", "存貨結束盤點時間", "找差異開始時間", "找差異結束時間", "找差異時間(H)", "盤點人員離店", "盤點效率(件/H/人)", "特殊狀況說明"];
     const gM = [gH];
     viewRows.forEach((r, i) => {
@@ -1525,7 +1552,6 @@ function AnalysisZone({ db, month, setMonth, toast }) {
         r.special || ""]);
     });
     XLSX.utils.book_append_sheet(wb, wsFromMatrix(gM), "各店概要");
-    // 分頁二：盤點效率
     const eH = ["日期", "主責課", "店號", "店名", "盤點人數", "實盤件數", "盤點開始時間", "盤點結束時間", "單店耗時(分)", "單店耗時(H)", "盤點效率(件/H/人)"];
     const eM = [eH];
     viewRows.forEach((r, i) => {
@@ -1536,8 +1562,152 @@ function AnalysisZone({ db, month, setMonth, toast }) {
         { f: `IF(OR(J${R}="",J${R}=0),"",ROUND(F${R}/J${R},0))`, v: r.efficiency }]);
     });
     XLSX.utils.book_append_sheet(wb, wsFromMatrix(eM), "盤點效率");
-    XLSX.writeFile(wb, `歐聖作業分析-${month}.xlsx`);
+    XLSX.writeFile(wb, `作業分析-${month}.xlsx`);
     toast("作業分析 Excel 已匯出（含公式）✔");
+  };
+
+  // 歐聖格式：比照「歐聖作業分析-數據分析產出範本」4 分頁（工作表/各店概要/盤點效率/損益分析-實際），日期時間用真正的
+  // Excel 日期/時間格式（非文字），分頁間用跨分頁公式互相引用（不重複帶值），並在匯出時把本月各店毛利%存進歷史，
+  // 供下個月匯出時自動帶出「上期毛利%」（本月若查無上期資料則留空）
+  const exportOpsOsheng = () => {
+    const p = db.prices.find((x) => x.brandId === brandId) || {};
+    const unit = num(p.unitPrice) || 2.2, minC = num(p.minCharge) || 5000, whF = num(p.whFee) || 500, costRate = num(p.costRate) || 315;
+    const gVal = (r) => Math.round(Math.max(r.pieces * unit, minC) + ((num(r.warehouse) || 1) - 1) * whF);
+    const N = viewRows.length;
+
+    // 查詢某店「上一次盤點」（本品牌、月份 < 本月、最近一次有記錄的月份）的毛利%
+    const prevMarginFor = (storeId) => {
+      const recs = (db.opsMargins || []).filter((x) => x.brandId === brandId && x.storeId === storeId && x.month < month);
+      if (recs.length === 0) return null;
+      recs.sort((a, b) => a.month.localeCompare(b.month));
+      return recs[recs.length - 1].marginPercent;
+    };
+
+    // 各列先算好所有衍生值，供 4 個分頁共用（避免重複算、也方便算合計）
+    const computed = viewRows.map((r) => {
+      const arrive = timeStrToFrac(r.arriveTime), countStart = timeStrToFrac(r.countStart), countEnd = timeStrToFrac(r.countEnd),
+        diffStart = timeStrToFrac(r.diffStart), diffEnd = timeStrToFrac(r.diffEnd), leave = timeStrToFrac(r.leaveTime);
+      const diffHrs = (diffStart != null && diffEnd != null) ? (diffEnd - diffStart) * 24 : null;
+      const countMin = (countStart != null && countEnd != null) ? (countEnd - countStart) * 24 * 60 : null;
+      const manHours = countMin != null ? (countMin / 60) * r.headcount : null;
+      const efficiency = (manHours != null && manHours > 0) ? r.pieces / manHours : null;
+      const stayHours = (arrive != null && leave != null) ? (leave - arrive) * 24 : null;
+      const stayManHours = stayHours != null ? stayHours * r.headcount : null;
+      const revenue = gVal(r);
+      const cost = stayManHours != null ? stayManHours * costRate : null;
+      const profit = cost != null ? revenue - cost : null;
+      const marginPct = (profit != null && revenue) ? profit / revenue : null;
+      return { r, dateSerial: dateToExcelSerial(r.date), arrive, countStart, countEnd, diffStart, diffEnd, leave, diffHrs, countMin, manHours, efficiency, stayHours, stayManHours, revenue, cost, profit, marginPct, prevMargin: prevMarginFor(r.storeId) };
+    });
+    const tf = (frac) => (frac == null ? "" : { v: frac, z: "h:mm" });
+    const dt = (c) => (c.dateSerial == null ? "" : { v: c.dateSerial, z: "yyyy-mm-dd" });
+
+    const wb = XLSX.utils.book_new();
+
+    // 分頁一：工作表（基礎資料 + 請款金額公式，供其他分頁引用）
+    const H1 = ["日期", "主責課", "店號", "店名", "實盤件數", "總倉別", "請款金額", "盤點人數", "協盤課", "協盤課"];
+    const M1 = [H1];
+    computed.forEach((c, i) => {
+      const R = i + 2;
+      M1.push([dt(c), c.r.dept, c.r.storeCode, c.r.storeName, c.r.pieces, num(c.r.warehouse) || 1,
+        { f: `ROUND((IF((E${R}*${unit})<${minC},${minC},(E${R}*${unit}))+((F${R}-1)*${whF})),0)`, v: c.revenue },
+        c.r.headcount, "", ""]);
+    });
+    M1.push(["", "", "", "合計", { f: `SUM(E2:E${N + 1})`, v: computed.reduce((a, c) => a + c.r.pieces, 0) }, "",
+      { f: `SUM(G2:G${N + 1})`, v: computed.reduce((a, c) => a + c.revenue, 0) }, "", "", ""]);
+    XLSX.utils.book_append_sheet(wb, wsFromMatrix(M1), "工作表");
+
+    // 分頁二：各店概要
+    const H2 = ["日期", "主責課", "店號", "店名", "盤點人數", "實盤件數", "進店時間", "存貨開始盤點時間", "存貨結束盤點時間", "找差異開始時間", "找差異結束時間", "找差異時間(H)", "盤點人員離店", "盤點效率\n(件/H/人)", "特殊狀況說明(找差異超過一小時請備註說明原因)"];
+    const M2 = [H2];
+    computed.forEach((c, i) => {
+      const R = i + 2;
+      M2.push([
+        { f: `工作表!A${R}`, v: c.dateSerial || 0, z: "yyyy-mm-dd" }, { f: `工作表!B${R}`, v: c.r.dept }, { f: `工作表!C${R}`, v: c.r.storeCode }, { f: `工作表!D${R}`, v: c.r.storeName },
+        { f: `工作表!H${R}`, v: c.r.headcount }, { f: `工作表!E${R}`, v: c.r.pieces },
+        tf(c.arrive), tf(c.countStart), tf(c.countEnd), tf(c.diffStart), tf(c.diffEnd),
+        c.diffHrs == null ? "" : { f: `(K${R}-J${R})*24`, v: c.diffHrs },
+        tf(c.leave),
+        c.efficiency == null ? "" : { f: `盤點效率!K${R}`, v: c.efficiency },
+        c.r.special || "",
+      ]);
+    });
+    XLSX.utils.book_append_sheet(wb, wsFromMatrix(M2), "各店概要");
+
+    // 分頁三：盤點效率
+    const H3 = ["日期", "主責課", "店號", "店名", "盤點人數", "實盤件數", "盤點開始時間", "盤點結束時間", "單店耗時\n(分)", "單店耗時\n(H)", "盤點效率\n(件/H/人)"];
+    const M3 = [H3];
+    computed.forEach((c, i) => {
+      const R = i + 2;
+      M3.push([
+        { f: `工作表!A${R}`, v: c.dateSerial || 0, z: "yyyy-mm-dd" }, { f: `工作表!B${R}`, v: c.r.dept }, { f: `工作表!C${R}`, v: c.r.storeCode }, { f: `工作表!D${R}`, v: c.r.storeName },
+        { f: `工作表!H${R}`, v: c.r.headcount }, { f: `工作表!E${R}`, v: c.r.pieces },
+        c.countStart == null ? "" : { f: `各店概要!H${R}`, v: c.countStart, z: "h:mm" },
+        c.countEnd == null ? "" : { f: `各店概要!I${R}`, v: c.countEnd, z: "h:mm" },
+        c.countMin == null ? "" : { f: `(H${R}-G${R})*24*60`, v: c.countMin },
+        c.manHours == null ? "" : { f: `I${R}/60*E${R}`, v: c.manHours },
+        c.efficiency == null ? "" : { f: `SUM(F${R}/J${R})`, v: c.efficiency },
+      ]);
+    });
+    const totalManHours3 = computed.reduce((a, c) => a + (c.manHours || 0), 0);
+    const totalR3 = N + 2;
+    M3.push(["", "", "", "合計",
+      { f: `SUM(E2:E${N + 1})`, v: computed.reduce((a, c) => a + c.r.headcount, 0) },
+      { f: `SUM(F2:F${N + 1})`, v: computed.reduce((a, c) => a + c.r.pieces, 0) },
+      "", "", "",
+      { f: `SUM(J2:J${N + 1})`, v: totalManHours3 },
+      { f: `SUM(F${totalR3}/J${totalR3})`, v: totalManHours3 ? computed.reduce((a, c) => a + c.r.pieces, 0) / totalManHours3 : 0 }]);
+    XLSX.utils.book_append_sheet(wb, wsFromMatrix(M3), "盤點效率");
+
+    // 分頁四：損益分析-實際（全新，收入=請款金額，成本=在店總時數×專員成本，毛利=收入-成本）
+    const H4 = ["日期", "主責課", "店號", "店名", "盤點人數", "實盤件數", "盤點效率\n(件/H/人)", "進店時間", "盤點人員離店", "在店時間\n(H)", "在店總時數(hr)", "收入", "成本", "毛利", "毛利%", "上期\n毛利%", "說明"];
+    const M4 = [H4];
+    computed.forEach((c, i) => {
+      const R = i + 2;
+      M4.push([
+        { f: `工作表!A${R}`, v: c.dateSerial || 0, z: "yyyy-mm-dd" }, { f: `工作表!B${R}`, v: c.r.dept }, { f: `工作表!C${R}`, v: c.r.storeCode }, { f: `工作表!D${R}`, v: c.r.storeName },
+        { f: `工作表!H${R}`, v: c.r.headcount }, { f: `工作表!E${R}`, v: c.r.pieces },
+        c.efficiency == null ? "" : { f: `盤點效率!K${R}`, v: c.efficiency },
+        c.arrive == null ? "" : { f: `各店概要!G${R}`, v: c.arrive, z: "h:mm" },
+        c.leave == null ? "" : { f: `各店概要!M${R}`, v: c.leave, z: "h:mm" },
+        c.stayHours == null ? "" : { f: `(I${R}-H${R})*24`, v: c.stayHours },
+        c.stayManHours == null ? "" : { f: `J${R}*E${R}`, v: c.stayManHours },
+        { f: `工作表!G${R}`, v: c.revenue },
+        c.cost == null ? "" : { f: `SUM(K${R})*${costRate}`, v: c.cost },
+        c.profit == null ? "" : { f: `SUM(L${R}-M${R})`, v: c.profit },
+        c.marginPct == null ? "" : { f: `SUM(N${R}/L${R})`, v: c.marginPct },
+        c.prevMargin == null ? "" : c.prevMargin,
+        { t: "str", f: `IF(各店概要!O${R}="","",各店概要!O${R})`, v: c.r.special || "" },
+      ]);
+    });
+    const sumRevenue = computed.reduce((a, c) => a + c.revenue, 0);
+    const sumCost = computed.reduce((a, c) => a + (c.cost || 0), 0);
+    const sumProfit = sumRevenue - sumCost;
+    const totalR4 = N + 2;
+    M4.push(["", "", "", "合計", "", "", "", "", "", "", "",
+      { f: `SUM(L2:L${N + 1})`, v: sumRevenue },
+      { f: `SUM(M2:M${N + 1})`, v: sumCost },
+      { f: `SUM(N2:N${N + 1})`, v: sumProfit },
+      { f: `SUM(N${totalR4}/L${totalR4})`, v: sumRevenue ? sumProfit / sumRevenue : 0 },
+      "", ""]);
+    M4.push([]);
+    M4.push([`說明:1.專員成本為${costRate}元/H`]);
+    const avgStayManHours = N ? computed.reduce((a, c) => a + (c.stayManHours || 0), 0) / N : 0;
+    const [y, mo] = month.split("-");
+    M4.push([`        2.${y}年${+mo}月平均單店工時為${avgStayManHours.toFixed(2)}H`]);
+    XLSX.utils.book_append_sheet(wb, wsFromMatrix(M4), "損益分析-實際");
+
+    XLSX.writeFile(wb, `歐聖作業分析-${month}.xlsx`);
+
+    // 把本月各店毛利%存進歷史，供下個月匯出時查「上期毛利%」（同店同月重新匯出會覆蓋，不會重複累積）
+    const storeIdsThisExport = new Set(computed.map((c) => c.r.storeId));
+    const marginRecs = computed.filter((c) => c.marginPct != null).map((c) => ({ brandId, storeId: c.r.storeId, month, marginPercent: c.marginPct }));
+    setDB((d) => {
+      const kept = (d.opsMargins || []).filter((x) => !(x.brandId === brandId && x.month === month && storeIdsThisExport.has(x.storeId)));
+      return { ...d, opsMargins: [...kept, ...marginRecs] };
+    });
+
+    toast("作業分析 Excel 已匯出（4 分頁、含公式）✔");
   };
 
   const Stat = ({ label, value, unit }) => (
@@ -1983,6 +2153,11 @@ function MaintainZone({ db, setDB, month, setMonth, toast }) {
                     <input type="number" min="0" step="1" value={bp.whFee == null ? "" : bp.whFee}
                       onChange={(e) => setPrice(brandId, { whFee: Number(e.target.value) })} className={inputCls + " w-32"} />
                   </div>
+                  <div>
+                    <label className="block text-xs text-slate-500 mb-1">專員成本（元/時）</label>
+                    <input type="number" min="0" step="1" value={bp.costRate == null ? "" : bp.costRate}
+                      onChange={(e) => setPrice(brandId, { costRate: Number(e.target.value) })} className={inputCls + " w-32"} />
+                  </div>
                 </>
               )}
               {showFees && (
@@ -2000,7 +2175,7 @@ function MaintainZone({ db, setDB, month, setMonth, toast }) {
                 </>
               )}
             </div>
-            {showOsheng && <p className="text-xs text-slate-400">歐聖請款＝MAX(實盤件數×單價, 最低收費)＋(總倉別-1)×倉別加計；件數不足最低收費者標記「最低收費」。</p>}
+            {showOsheng && <p className="text-xs text-slate-400">歐聖請款＝MAX(實盤件數×單價, 最低收費)＋(總倉別-1)×倉別加計；件數不足最低收費者標記「最低收費」。專員成本用於作業分析「損益分析」分頁算成本／毛利。</p>}
             {showFees && <p className="text-xs text-slate-400">文件處理費、超時費為英斯伯專屬，預設每場（每筆盤點紀錄）加收；如計算方式不同再告知調整。</p>}
           </div>
         );
@@ -2213,7 +2388,7 @@ function App() {
         {tab === "download" && <DownloadZone db={db} month={month} setMonth={setMonth} toast={toast} />}
         {tab === "count" && <CountUploadZone db={db} setDB={setDB} month={month} setMonth={setMonth} toast={toast} />}
         {tab === "fill" && <FillZone db={db} setDB={setDB} month={month} setMonth={setMonth} user={user} toast={toast} />}
-        {tab === "analysis" && <AnalysisZone db={db} month={month} setMonth={setMonth} toast={toast} />}
+        {tab === "analysis" && <AnalysisZone db={db} setDB={setDB} month={month} setMonth={setMonth} toast={toast} />}
         {tab === "maintain" && <MaintainZone db={db} setDB={setDB} month={month} setMonth={setMonth} toast={toast} />}
       </main>
 
