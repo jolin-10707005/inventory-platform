@@ -292,12 +292,16 @@ function putMaster(rec) {
   rg2.setNumberFormat("@"); rg2.setValues([[rec.storeId, rec.month, rec.type, name, rec.srcDate || "", rec.srcFile || ""]]);
 }
 
-// 批次寫入多店鋪主檔/庫存檔（歐聖寬表用）：baseRows=[[商品編號,物品名稱,成本],...] 只送一次，
-// stores=[{storeId, qty:[各列數量]}] 每店鋪只帶自己的數量陣列。伺服器端在同一次執行內組回各店鋪完整列、逐一呼叫 putMaster 寫入，
+// 批次寫入多店鋪主檔/庫存檔（歐聖寬表用）：baseRows=[[商品編號,物品名稱,成本],...] 只送一次（該批商品列），
+// stores=[{storeId, qty:[該批各列數量]}] 每店鋪只帶自己的數量陣列。伺服器端在同一次執行內組回各店鋪完整列、逐一寫入，
 // 取代前端「每個店鋪各自重送整份商品列」的做法——商品數×店鋪數一多，單次請求會被 Google 前端擋掉（瀏覽器端看到類似 CORS 的失敗）。
+// 商品數量非常大時，前端(api.js)會把商品列切成多個小請求依序送出：append=false(預設)為第一批，清除重建工作表；
+// append=true 為後續批次，只在既有工作表尾端加列，不動表頭、不重複建立索引（索引已在第一批建立）。
 function putMasterBatch(payload) {
   var baseRows = payload.baseRows || [];
   var stores = payload.stores || [];
+  var append = !!payload.append;
+  var cols = ["商品編號", "barcode", "舊商品編號2", "物品名稱", "庫存數量", "品項平均成本"];
   var storeIds = [];
   stores.forEach(function (st) {
     var rows = baseRows.map(function (b, i) {
@@ -306,15 +310,28 @@ function putMasterBatch(payload) {
         "物品名稱": b[1], "庫存數量": String(st.qty[i]), "品項平均成本": b[2]
       };
     });
-    putMaster({
+    var rec = {
       storeId: st.storeId, month: payload.month, type: payload.type,
       srcDate: payload.srcDate, srcFile: payload.srcFile,
-      columns: ["商品編號", "barcode", "舊商品編號2", "物品名稱", "庫存數量", "品項平均成本"],
-      rows: rows
-    });
+      columns: cols, rows: rows
+    };
+    if (append) appendMasterRows(rec); else putMaster(rec);
     storeIds.push(st.storeId);
   });
   return storeIds;
+}
+
+// putMaster 的追加版本：只在既有工作表尾端加資料列，不清除、不動表頭、不動主檔索引（第一批 putMaster 已處理過）
+function appendMasterRows(rec) {
+  var name = dataSheetName(rec.storeId, rec.month, rec.type);
+  var ds = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(name);
+  var cols = rec.columns || [];
+  var rows = rec.rows || [];
+  if (!ds || !cols.length || !rows.length) return;
+  var startRow = ds.getLastRow() + 1;
+  var out = rows.map(function (r) { return cols.map(function (c) { var v = r[c]; return v == null ? "" : v; }); });
+  var rg = ds.getRange(startRow, 1, out.length, cols.length);
+  rg.setNumberFormat("@"); rg.setValues(out);
 }
 
 // 依來源檔名刪除主檔（同檔名重新上傳前先清空舊產出）

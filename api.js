@@ -89,8 +89,22 @@ const InventoryAPI = {
       }
       return stores.map((s) => s.storeId);
     }
-    const j = await this._post({ action: "putMasterBatch", month, type, srcDate, srcFile, baseRows, stores });
-    return j.storeIds || [];
+    // 雲端模式：商品列數一多（乘上店鋪數）單次請求會過大，被 Google 前端擋掉（瀏覽器端看到類似 CORS 的失敗，
+    // Apps Script 執行記錄裡完全查不到）。依商品列切成多個小請求依序送出，呼叫端完全不用知道這件事。
+    const CHUNK_ROWS = 2000;
+    if (baseRows.length <= CHUNK_ROWS) {
+      const j = await this._post({ action: "putMasterBatch", month, type, srcDate, srcFile, baseRows, stores, append: false });
+      return j.storeIds || [];
+    }
+    let storeIds = [];
+    for (let start = 0; start < baseRows.length; start += CHUNK_ROWS) {
+      const end = Math.min(start + CHUNK_ROWS, baseRows.length);
+      const baseRowsChunk = baseRows.slice(start, end);
+      const storesChunk = stores.map((st) => ({ storeId: st.storeId, qty: st.qty.slice(start, end) }));
+      const j = await this._post({ action: "putMasterBatch", month, type, srcDate, srcFile, baseRows: baseRowsChunk, stores: storesChunk, append: start > 0 });
+      if (start === 0) storeIds = j.storeIds || [];
+    }
+    return storeIds;
   },
 
   /** 依來源檔名刪除主檔（同檔名重新上傳前先清空） */
