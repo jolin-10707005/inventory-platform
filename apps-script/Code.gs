@@ -237,12 +237,34 @@ function mastersIndex() {
   return out;
 }
 
-// 依 storeId/month/type 產生合法且唯一的資料工作表名稱
+// 依 storeId/month/type 產生合法且唯一的資料工作表名稱（主檔／單店格式用）
 function dataSheetName(storeId, month, type) {
   var raw = "D_" + storeId + "_" + month + "_" + type;
   return raw.replace(/[:\\\/\?\*\[\]']/g, "_").substring(0, 95);
 }
 
+// 寬表工作表名稱（庫存檔用）：一次上傳(一個 srcFile)的所有店鋪共用同一份分頁，不依店鋪各自命名
+function wideSheetName(srcFile, month, type) {
+  var raw = "W_" + String(srcFile || "").replace(/\.[^.]+$/, "") + "_" + month + "_" + type;
+  return raw.replace(/[:\\\/\?\*\[\]']/g, "_").substring(0, 95);
+}
+
+// 主檔索引 upsert：同 storeId+month+type 已存在就更新指向的分頁，不存在就新增一列
+function upsertMasterIndex(storeId, month, type, sheetName, srcDate, srcFile) {
+  var sh = masterIndexSheet();
+  var v = sh.getDataRange().getValues();
+  for (var i = 1; i < v.length; i++) {
+    if (String(v[i][0]) === String(storeId) && String(v[i][1]) === String(month) && String(v[i][2]) === String(type)) {
+      var rgU = sh.getRange(i + 1, 4, 1, 3); rgU.setNumberFormat("@"); rgU.setValues([[sheetName, srcDate || "", srcFile || ""]]); return;
+    }
+  }
+  var ri = sh.getLastRow() + 1;
+  var rg2 = sh.getRange(ri, 1, 1, MASTER_INDEX_HEADERS.length);
+  rg2.setNumberFormat("@"); rg2.setValues([[storeId, month, type, sheetName, srcDate || "", srcFile || ""]]);
+}
+
+// 讀取單一店鋪主檔／庫存檔。庫存檔存成「寬表」(商品固定欄+每店一欄數量，多店共用一份分頁)，
+// 這裡會自動判斷：分頁表頭若找得到 storeId 這個欄位，代表是寬表，重組成標準 6 欄；否則照舊格式直接讀（主檔/舊資料）。
 function getMaster(storeId, month, type) {
   var sh = masterIndexSheet();
   var v = sh.getDataRange().getValues();
@@ -256,16 +278,31 @@ function getMaster(storeId, month, type) {
   var dv = ds.getDataRange().getValues();
   if (dv.length < 1) return { columns: [], rows: [] };
   var cols = dv[0];
-  var rows = [];
-  for (var r = 1; r < dv.length; r++) {
-    if (dv[r].join("") === "") continue;
-    var o = {};
-    for (var c = 0; c < cols.length; c++) o[cols[c]] = dv[r][c];
-    rows.push(o);
+  var qtyColIdx = cols.indexOf(String(storeId));
+  if (qtyColIdx >= 0) {
+    // 寬表格式：商品固定欄(0-4)＋這家店的數量欄，重組回標準 6 欄
+    var rows = [];
+    for (var r = 1; r < dv.length; r++) {
+      if (dv[r].join("") === "") continue;
+      rows.push({
+        "商品編號": dv[r][0], "barcode": dv[r][1], "舊商品編號2": dv[r][2],
+        "物品名稱": dv[r][3], "品項平均成本": dv[r][4], "庫存數量": dv[r][qtyColIdx]
+      });
+    }
+    return { columns: ["商品編號", "barcode", "舊商品編號2", "物品名稱", "庫存數量", "品項平均成本"], rows: rows };
   }
-  return { columns: cols, rows: rows };
+  // 舊格式／主檔：照原本欄位直接讀
+  var rows2 = [];
+  for (var r2 = 1; r2 < dv.length; r2++) {
+    if (dv[r2].join("") === "") continue;
+    var o = {};
+    for (var c = 0; c < cols.length; c++) o[cols[c]] = dv[r2][c];
+    rows2.push(o);
+  }
+  return { columns: cols, rows: rows2 };
 }
 
+// 寫入主檔（歐聖以外品牌／歐聖主檔，一份=一個店鋪或一個種類，非寬表）
 function putMaster(rec) {
   var name = dataSheetName(rec.storeId, rec.month, rec.type);
   var ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -279,62 +316,114 @@ function putMaster(rec) {
     var rg = ds.getRange(1, 1, out.length, cols.length);
     rg.setNumberFormat("@"); rg.setValues(out);
   }
-  // 索引 upsert
-  var sh = masterIndexSheet();
-  var v = sh.getDataRange().getValues();
-  for (var i = 1; i < v.length; i++) {
-    if (String(v[i][0]) === String(rec.storeId) && String(v[i][1]) === String(rec.month) && String(v[i][2]) === String(rec.type)) {
-      var rgU = sh.getRange(i + 1, 4, 1, 3); rgU.setNumberFormat("@"); rgU.setValues([[name, rec.srcDate || "", rec.srcFile || ""]]); return;
-    }
-  }
-  var ri = sh.getLastRow() + 1;
-  var rg2 = sh.getRange(ri, 1, 1, MASTER_INDEX_HEADERS.length);
-  rg2.setNumberFormat("@"); rg2.setValues([[rec.storeId, rec.month, rec.type, name, rec.srcDate || "", rec.srcFile || ""]]);
+  upsertMasterIndex(rec.storeId, rec.month, rec.type, name, rec.srcDate, rec.srcFile);
 }
 
-// 批次寫入多店鋪主檔/庫存檔（歐聖寬表用）：baseRows=[[商品編號,物品名稱,成本],...] 只送一次（該批商品列），
-// stores=[{storeId, qty:[該批各列數量]}] 每店鋪只帶自己的數量陣列。伺服器端在同一次執行內組回各店鋪完整列、逐一寫入，
-// 取代前端「每個店鋪各自重送整份商品列」的做法——商品數×店鋪數一多，單次請求會被 Google 前端擋掉（瀏覽器端看到類似 CORS 的失敗）。
-// 商品數量非常大時，前端(api.js)會把商品列切成多個小請求依序送出：append=false(預設)為第一批，清除重建工作表；
-// append=true 為後續批次，只在既有工作表尾端加列，不動表頭、不重複建立索引（索引已在第一批建立）。
+// 批次寫入多店鋪庫存檔（歐聖寬表用）：一次上傳只建「一份」分頁——商品固定欄(商品編號/barcode/舊商品編號2/
+// 物品名稱/品項平均成本)只出現一次，後面每欄是一家店的數量(欄名=storeId)。取代舊做法「每家店各自存一份完整
+// 明細」（40家店×2萬5千筆商品＝上百萬格重複寫入，是造成上傳過大/過慢/失敗的根本原因，不只是單次請求大小的問題）。
+// baseRows=[[商品編號,物品名稱,成本],...]（該批商品列），stores=[{storeId, qty:[該批各列數量]}]。
+// 商品數量非常大時，前端(api.js)會把商品列切成多個小請求依序送出：append=false(預設)為第一批，建立/清除重建這份
+// 寬表分頁＋幫每家店的主檔索引指到這份分頁；append=true 為後續批次，只在寬表尾端加列，不動表頭、不重建索引。
 function putMasterBatch(payload) {
   var baseRows = payload.baseRows || [];
   var stores = payload.stores || [];
   var append = !!payload.append;
-  var cols = ["商品編號", "barcode", "舊商品編號2", "物品名稱", "庫存數量", "品項平均成本"];
-  var storeIds = [];
-  stores.forEach(function (st) {
-    var rows = baseRows.map(function (b, i) {
-      return {
-        "商品編號": b[0], "barcode": b[0], "舊商品編號2": "",
-        "物品名稱": b[1], "庫存數量": String(st.qty[i]), "品項平均成本": b[2]
-      };
-    });
-    var rec = {
-      storeId: st.storeId, month: payload.month, type: payload.type,
-      srcDate: payload.srcDate, srcFile: payload.srcFile,
-      columns: cols, rows: rows
-    };
-    if (append) appendMasterRows(rec); else putMaster(rec);
-    storeIds.push(st.storeId);
+  var storeIds = stores.map(function (st) { return st.storeId; });
+  var name = wideSheetName(payload.srcFile, payload.month, payload.type);
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var ds = ss.getSheetByName(name);
+  var headers = ["商品編號", "barcode", "舊商品編號2", "物品名稱", "品項平均成本"].concat(storeIds);
+
+  if (!append) {
+    if (!ds) ds = ss.insertSheet(name); else ds.clear();
+    var hr = ds.getRange(1, 1, 1, headers.length);
+    hr.setNumberFormat("@"); hr.setValues([headers]);
+  }
+  if (!ds) return storeIds; // append 但分頁不存在（理論上不會發生，防呆）
+
+  var out = baseRows.map(function (b, i) {
+    var row = [b[0], b[0], "", b[1], b[2]];
+    stores.forEach(function (st) { row.push(String(st.qty[i])); });
+    return row;
   });
+  var startRow = append ? ds.getLastRow() + 1 : 2;
+  var rg = ds.getRange(startRow, 1, out.length, headers.length);
+  rg.setNumberFormat("@"); rg.setValues(out);
+
+  if (!append) {
+    storeIds.forEach(function (sid) { upsertMasterIndex(sid, payload.month, payload.type, name, payload.srcDate, payload.srcFile); });
+  }
   return storeIds;
 }
 
-// putMaster 的追加版本：只在既有工作表尾端加資料列，不清除、不動表頭、不動主檔索引（第一批 putMaster 已處理過）
-function appendMasterRows(rec) {
-  var name = dataSheetName(rec.storeId, rec.month, rec.type);
-  var ds = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(name);
-  var cols = rec.columns || [];
-  var rows = rec.rows || [];
-  if (!ds || !cols.length || !rows.length) return;
-  var startRow = ds.getLastRow() + 1;
-  var out = rows.map(function (r) { return cols.map(function (c) { var v = r[c]; return v == null ? "" : v; }); });
-  var rg = ds.getRange(startRow, 1, out.length, cols.length);
-  rg.setNumberFormat("@"); rg.setValues(out);
+// 一次性資料轉換：把舊格式「每店一份完整明細」的庫存檔，轉成「一次上傳一份寬表」格式
+// 用法：在 Apps Script 編輯器上方函式清單選「migrateStockToWideFormat」→ 按 ▶ 執行
+// 會依 (srcFile, month) 分組，讀各店舊分頁的商品固定欄+數量欄，合併成一份寬表，更新索引指向新分頁，刪除舊分頁
+function migrateStockToWideFormat() {
+  var sh = masterIndexSheet();
+  var v = sh.getDataRange().getValues();
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var groups = {};
+  for (var i = 1; i < v.length; i++) {
+    var row = v[i];
+    if (String(row[0]) === "" || String(row[2]) !== "stock") continue;
+    var key = row[5] + "|" + row[1];
+    (groups[key] = groups[key] || []).push({ storeId: row[0], month: row[1], sheetName: row[3], srcDate: row[4], srcFile: row[5] });
+  }
+  var migrated = 0, skipped = 0;
+  Object.keys(groups).forEach(function (key) {
+    var items = groups[key];
+    var uniqueSheets = {}; items.forEach(function (x) { uniqueSheets[x.sheetName] = true; });
+    if (Object.keys(uniqueSheets).length === 1 && items.length > 1) { skipped += items.length; return; } // 已是寬表(多店共用同一分頁)，略過
+    var baseSheet = ss.getSheetByName(items[0].sheetName);
+    if (!baseSheet) { skipped += items.length; return; }
+    var baseVals = baseSheet.getDataRange().getValues();
+    if (baseVals.length < 2) { skipped += items.length; return; }
+    var baseCols = baseVals[0];
+    var codeIdx = baseCols.indexOf("商品編號"), nameIdx = baseCols.indexOf("物品名稱"), costIdx = baseCols.indexOf("品項平均成本");
+    if (codeIdx < 0) { skipped += items.length; return; } // 已是寬表格式（表頭沒有這些固定欄名）或格式不符，略過
+    var productRows = [];
+    for (var r = 1; r < baseVals.length; r++) {
+      if (baseVals[r].join("") === "") continue;
+      productRows.push([baseVals[r][codeIdx], baseVals[r][nameIdx], baseVals[r][costIdx]]);
+    }
+    var storeIds = [], qtyByStore = {};
+    items.forEach(function (it) {
+      var ds = ss.getSheetByName(it.sheetName);
+      if (!ds) return;
+      var dv = ds.getDataRange().getValues();
+      var cols = dv[0];
+      var qIdx = cols.indexOf("庫存數量");
+      var qty = [];
+      for (var r2 = 1; r2 < dv.length; r2++) { if (dv[r2].join("") === "") continue; qty.push(dv[r2][qIdx]); }
+      storeIds.push(it.storeId);
+      qtyByStore[it.storeId] = qty;
+    });
+    var wideName = wideSheetName(items[0].srcFile, items[0].month, "stock");
+    var wideSheet = ss.getSheetByName(wideName);
+    if (!wideSheet) wideSheet = ss.insertSheet(wideName); else wideSheet.clear();
+    var headers = ["商品編號", "barcode", "舊商品編號2", "物品名稱", "品項平均成本"].concat(storeIds);
+    var out = [headers];
+    productRows.forEach(function (p, idx) {
+      var row = [p[0], p[0], "", p[1], p[2]];
+      storeIds.forEach(function (sid) { row.push((qtyByStore[sid] && qtyByStore[sid][idx] != null) ? qtyByStore[sid][idx] : ""); });
+      out.push(row);
+    });
+    var rg = wideSheet.getRange(1, 1, out.length, headers.length);
+    rg.setNumberFormat("@"); rg.setValues(out);
+    items.forEach(function (it) {
+      upsertMasterIndex(it.storeId, it.month, "stock", wideName, it.srcDate, it.srcFile);
+      if (it.sheetName !== wideName) { var oldDs = ss.getSheetByName(it.sheetName); if (oldDs) { try { ss.deleteSheet(oldDs); } catch (e) {} } }
+    });
+    migrated += items.length;
+  });
+  Logger.log("已轉換 " + migrated + " 筆庫存檔索引為寬表格式，略過 " + skipped + " 筆(已是寬表或找不到資料)");
+  return { migrated: migrated, skipped: skipped };
 }
 
 // 依來源檔名刪除主檔（同檔名重新上傳前先清空舊產出）
+// 庫存檔為寬表，同一次上傳的多家店索引列會指向同一份分頁，用 deletedSheets 避免重複刪除同一份分頁時報錯
 function deleteMastersByFile(srcFile, month) {
   var sh = masterIndexSheet();
   var v = sh.getDataRange().getValues();
@@ -342,11 +431,16 @@ function deleteMastersByFile(srcFile, month) {
   var header = v[0];
   var keep = [header]; var removed = 0;
   var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var deletedSheets = {};
   for (var i = 1; i < v.length; i++) {
     var row = v[i];
     if (String(row[0]) === "") continue;
     if (String(row[5]) === String(srcFile) && String(row[1]) === String(month)) {
-      var ds = ss.getSheetByName(row[3]); if (ds) { try { ss.deleteSheet(ds); } catch (e) {} }
+      var sheetName = row[3];
+      if (!deletedSheets[sheetName]) {
+        var ds = ss.getSheetByName(sheetName); if (ds) { try { ss.deleteSheet(ds); } catch (e) {} }
+        deletedSheets[sheetName] = true;
+      }
       removed++;
     } else { keep.push(row); }
   }
