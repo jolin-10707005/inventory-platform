@@ -359,7 +359,9 @@ function putMasterBatch(payload) {
 
 // 一次性資料轉換：把舊格式「每店一份完整明細」的庫存檔，轉成「一次上傳一份寬表」格式
 // 用法：在 Apps Script 編輯器上方函式清單選「migrateStockToWideFormat」→ 按 ▶ 執行
-// 會依 (srcFile, month) 分組，讀各店舊分頁的商品固定欄+數量欄，合併成一份寬表，更新索引指向新分頁，刪除舊分頁
+// 會依 (srcFile, month) 分組，讀各店舊分頁的商品固定欄+數量欄，合併成一份寬表，更新索引指向新分頁，刪除舊分頁。
+// 每一組都是「先讀完資料、確定安全 → 先刪舊分頁騰出空間 → 再建立寬表寫入」，避免新舊分頁同時並存瞬間
+// 超過 Google Sheets 每份試算表 1000 萬儲存格的上限（這是舊格式一直上傳失敗的真正原因，不是請求大小或配額）。
 function migrateStockToWideFormat() {
   var sh = masterIndexSheet();
   var v = sh.getDataRange().getValues();
@@ -383,12 +385,14 @@ function migrateStockToWideFormat() {
     var baseCols = baseVals[0];
     var codeIdx = baseCols.indexOf("商品編號"), nameIdx = baseCols.indexOf("物品名稱"), costIdx = baseCols.indexOf("品項平均成本");
     if (codeIdx < 0) { skipped += items.length; return; } // 已是寬表格式（表頭沒有這些固定欄名）或格式不符，略過
+
+    // 1) 先把這組全部店鋪的資料讀進記憶體（讀取不會增加儲存格用量，不受上限影響）
     var productRows = [];
     for (var r = 1; r < baseVals.length; r++) {
       if (baseVals[r].join("") === "") continue;
       productRows.push([baseVals[r][codeIdx], baseVals[r][nameIdx], baseVals[r][costIdx]]);
     }
-    var storeIds = [], qtyByStore = {};
+    var storeIds = [], qtyByStore = {}, sheetsToDelete = {};
     items.forEach(function (it) {
       var ds = ss.getSheetByName(it.sheetName);
       if (!ds) return;
@@ -399,7 +403,16 @@ function migrateStockToWideFormat() {
       for (var r2 = 1; r2 < dv.length; r2++) { if (dv[r2].join("") === "") continue; qty.push(dv[r2][qIdx]); }
       storeIds.push(it.storeId);
       qtyByStore[it.storeId] = qty;
+      sheetsToDelete[it.sheetName] = true;
     });
+
+    // 2) 資料讀完、確認安全後，先刪除這組的舊分頁騰出儲存格空間，再建立寬表——不要新舊同時並存
+    Object.keys(sheetsToDelete).forEach(function (nm) {
+      var oldDs = ss.getSheetByName(nm);
+      if (oldDs) { try { ss.deleteSheet(oldDs); } catch (e) {} }
+    });
+
+    // 3) 騰出空間後才建立寬表並寫入
     var wideName = wideSheetName(items[0].srcFile, items[0].month, "stock");
     var wideSheet = ss.getSheetByName(wideName);
     if (!wideSheet) wideSheet = ss.insertSheet(wideName); else wideSheet.clear();
@@ -412,10 +425,9 @@ function migrateStockToWideFormat() {
     });
     var rg = wideSheet.getRange(1, 1, out.length, headers.length);
     rg.setNumberFormat("@"); rg.setValues(out);
-    items.forEach(function (it) {
-      upsertMasterIndex(it.storeId, it.month, "stock", wideName, it.srcDate, it.srcFile);
-      if (it.sheetName !== wideName) { var oldDs = ss.getSheetByName(it.sheetName); if (oldDs) { try { ss.deleteSheet(oldDs); } catch (e) {} } }
-    });
+
+    // 4) 更新索引，指向新的寬表分頁
+    items.forEach(function (it) { upsertMasterIndex(it.storeId, it.month, "stock", wideName, it.srcDate, it.srcFile); });
     migrated += items.length;
   });
   Logger.log("已轉換 " + migrated + " 筆庫存檔索引為寬表格式，略過 " + skipped + " 筆(已是寬表或找不到資料)");
