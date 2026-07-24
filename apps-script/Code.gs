@@ -230,14 +230,18 @@ var LAYOUT_SHEET_KEYWORD = "賣場+倉庫";
 // 把 Drive 上的 Excel（.xls/.xlsx）轉成 PDF，只輸出「賣場+倉庫 LAYOUT」那張分頁。
 // 作法：先把 Excel 匯入成暫存 Google 試算表（需啟用進階服務 Drive API），用 export 端點只匯出指定分頁的 PDF，最後刪除暫存試算表。
 // 需求：Apps Script 專案要啟用進階 Google 服務「Drive API」（編輯器左側「服務 +」→ 加入 Drive API）。
+// 把 Excel blob 匯入成 Google 試算表，回傳新試算表 ID。自動相容 Drive API v2 與 v3：
+// v2 用 Drive.Files.insert(...{convert:true})；v3 用 Drive.Files.create（在 metadata 指定 Google 格式 mimeType 即自動轉換）
+function importXlsxToGoogleSheet(blob, title) {
+  if (Drive.Files.insert) {
+    return Drive.Files.insert({ title: title, mimeType: MimeType.GOOGLE_SHEETS }, blob, { convert: true }).id;
+  }
+  return Drive.Files.create({ name: title, mimeType: MimeType.GOOGLE_SHEETS }, blob).id;
+}
+
 function layoutExcelToPdf(fileId) {
   var xlsxFile = DriveApp.getFileById(fileId);
-  var tempSheet = Drive.Files.insert(
-    { title: "_tmp_layout_" + fileId, mimeType: MimeType.GOOGLE_SHEETS },
-    xlsxFile.getBlob(),
-    { convert: true }
-  );
-  var ssId = tempSheet.id;
+  var ssId = importXlsxToGoogleSheet(xlsxFile.getBlob(), "_tmp_layout_" + fileId);
   try {
     var ss = SpreadsheetApp.openById(ssId);
     var sheets = ss.getSheets();
@@ -257,7 +261,8 @@ function layoutExcelToPdf(fileId) {
     var resp = UrlFetchApp.fetch(url, { headers: { Authorization: "Bearer " + ScriptApp.getOAuthToken() } });
     return resp.getBlob();
   } finally {
-    try { Drive.Files.remove(ssId); } catch (e) {}
+    // 用 DriveApp 刪暫存試算表（跨 v2/v3 都適用）
+    try { DriveApp.getFileById(ssId).setTrashed(true); } catch (e) {}
   }
 }
 
@@ -597,7 +602,7 @@ function diagnoseLayout() {
     Logger.log("!! Drive 進階服務未啟用。請在編輯器左側『服務 +』加入 Drive API，存檔後再執行一次本函式。");
     return;
   }
-  Logger.log("② typeof Drive.Files = " + (typeof Drive.Files) + "；typeof Drive.Files.insert = " + (Drive.Files ? typeof Drive.Files.insert : "N/A"));
+  Logger.log("② Drive.Files.insert(v2)=" + (Drive.Files ? typeof Drive.Files.insert : "N/A") + "；Drive.Files.create(v3)=" + (Drive.Files ? typeof Drive.Files.create : "N/A"));
   var rows = readTab("layouts");
   Logger.log("③ layouts 分頁筆數 = " + rows.length);
   if (!rows.length) { Logger.log("!! layouts 分頁沒有資料，請先在平台上傳一張 Layout 圖再測。"); return; }
