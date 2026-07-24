@@ -430,9 +430,17 @@ function DownloadZone({ db, month, setMonth, toast }) {
       const m = await InventoryAPI.getMaster(key, month, type);
       if (!m || !m.columns || m.columns.length === 0) { toast(`查無此${label}，請重新整理或請管理者上傳`); return; }
       const rows = m.rows.map((r) => m.columns.map((c) => (r[c] == null ? "" : r[c])));
-      const idxEntry = index.find((x) => x.storeId === key && x.month === month && x.type === type);
-      const dateStr = (idxEntry && idxEntry.srcDate) ? idxEntry.srcDate : new Date().toISOString().slice(0, 10).replace(/-/g, "");
-      exportXLSX(`${brand ? brand.name : ""}盤點用${label}-${namePart}-${dateStr}.xlsx`, label, [m.columns, ...rows], { asText: true });
+      let filename;
+      if (type === "stock") {
+        // 庫存檔：店號店名-結轉用-庫存件數（庫存件數＝該店庫存數量欄加總）
+        const totalQty = m.rows.reduce((a, r) => a + num(r[QTY_COL]), 0);
+        filename = `${store.code}${store.name}-結轉用-${totalQty}.xlsx`;
+      } else {
+        const idxEntry = index.find((x) => x.storeId === key && x.month === month && x.type === type);
+        const dateStr = (idxEntry && idxEntry.srcDate) ? idxEntry.srcDate : new Date().toISOString().slice(0, 10).replace(/-/g, "");
+        filename = `${brand ? brand.name : ""}盤點用${label}-${namePart}-${dateStr}.xlsx`;
+      }
+      exportXLSX(filename, label, [m.columns, ...rows], { asText: true });
       toast(`已下載 ${namePart} ${label}（${m.rows.length} 筆）`);
     } catch (e) {
       toast("下載失敗，請確認網路後再試");
