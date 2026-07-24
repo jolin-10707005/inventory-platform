@@ -154,11 +154,21 @@ const InventoryAPI = {
     return j.url;
   },
 
-  /** 批次打包下載（伺服器端 zip，避免瀏覽器端抓既有 Drive 檔案的 CORS 限制）
-   *  files = [{fileUrl, fileName}]；回傳 { filename, base64 }。本機模式無 Drive，回傳 null 讓呼叫端改用逐個下載 */
-  async zipFiles(files, zipName) {
+  /** Layout 圖下載：後端把上傳的 Excel 「賣場+倉庫 LAYOUT」分頁轉成 PDF，回傳 { filename, base64 }。
+   *  本機模式無後端轉檔，回傳 null 讓呼叫端改為下載原始檔 */
+  async layoutPdf(fileUrl, fileName) {
     if (!this.cloud()) return null;
-    const j = await this._post({ action: "zipFiles", files, zipName });
+    const j = await this._post({ action: "layoutPdf", fileUrl, fileName });
+    if (j.error) throw new Error(j.error);
+    return { filename: j.filename, base64: j.base64 };
+  },
+
+  /** 批次打包下載（伺服器端 zip，避免瀏覽器端抓既有 Drive 檔案的 CORS 限制）
+   *  files = [{fileUrl, fileName}]；asLayoutPdf=true 時每份先轉成 PDF 再打包（Layout 圖用）。
+   *  回傳 { filename, base64 }。本機模式無 Drive，回傳 null 讓呼叫端改用逐個下載 */
+  async zipFiles(files, zipName, asLayoutPdf) {
+    if (!this.cloud()) return null;
+    const j = await this._post({ action: "zipFiles", files, zipName, asLayoutPdf: !!asLayoutPdf });
     if (j.error) throw new Error(j.error);
     return { filename: j.filename, base64: j.base64 };
   },

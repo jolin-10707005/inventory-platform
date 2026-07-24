@@ -56,7 +56,9 @@ function doPost(e) {
     case "uploadCountSheet":
       return jsonOut({ ok: true, url: uploadCountSheet(body.dataUrl, body.filename, body.brandName) });
     case "zipFiles":
-      return jsonOut(zipFiles(body.files, body.zipName));
+      return jsonOut(zipFiles(body.files, body.zipName, body.asLayoutPdf));
+    case "layoutPdf":
+      return jsonOut(layoutPdf(body.fileUrl, body.fileName));
     case "putMaster":
       putMaster(body.rec);
       return jsonOut({ ok: true });
@@ -195,18 +197,72 @@ function extractDriveId(url) {
 }
 
 // 批次打包下載：files = [{fileUrl, fileName}]；伺服器端直接讀 Drive 檔案打包，避免瀏覽器端 CORS 限制
-function zipFiles(files, zipName) {
+// asLayoutPdf=true 時，每份先把 Excel 的「賣場+倉庫 LAYOUT」分頁轉成 PDF 再打包（Layout 圖用）
+function zipFiles(files, zipName, asLayoutPdf) {
   if (!files || files.length === 0) return { error: "沒有可下載的檔案" };
   var blobs = [];
   files.forEach(function (f) {
     var id = extractDriveId(f.fileUrl);
     if (!id) return;
-    var blob = DriveApp.getFileById(id).getBlob();
-    blobs.push(blob.setName(f.fileName || blob.getName()));
+    var blob, fname;
+    if (asLayoutPdf) {
+      blob = layoutExcelToPdf(id);
+      fname = String(f.fileName || blob.getName()).replace(/\.(xlsx|xls)$/i, "") + ".pdf";
+    } else {
+      blob = DriveApp.getFileById(id).getBlob();
+      fname = f.fileName || blob.getName();
+    }
+    blobs.push(blob.setName(fname));
   });
   if (blobs.length === 0) return { error: "找不到可下載的檔案" };
   var zipBlob = Utilities.zip(blobs, (zipName || "下載") + ".zip");
   return { ok: true, filename: zipBlob.getName(), base64: Utilities.base64Encode(zipBlob.getBytes()) };
+}
+
+// Layout 圖只轉這張分頁（名稱去掉空白後包含此關鍵字者）
+var LAYOUT_SHEET_KEYWORD = "賣場+倉庫";
+
+// 把 Drive 上的 Excel（.xls/.xlsx）轉成 PDF，只輸出「賣場+倉庫 LAYOUT」那張分頁。
+// 作法：先把 Excel 匯入成暫存 Google 試算表（需啟用進階服務 Drive API），用 export 端點只匯出指定分頁的 PDF，最後刪除暫存試算表。
+// 需求：Apps Script 專案要啟用進階 Google 服務「Drive API」（編輯器左側「服務 +」→ 加入 Drive API）。
+function layoutExcelToPdf(fileId) {
+  var xlsxFile = DriveApp.getFileById(fileId);
+  var tempSheet = Drive.Files.insert(
+    { title: "_tmp_layout_" + fileId, mimeType: MimeType.GOOGLE_SHEETS },
+    xlsxFile.getBlob(),
+    { convert: true }
+  );
+  var ssId = tempSheet.id;
+  try {
+    var ss = SpreadsheetApp.openById(ssId);
+    var sheets = ss.getSheets();
+    var target = null;
+    for (var i = 0; i < sheets.length; i++) {
+      if (sheets[i].getName().replace(/\s/g, "").indexOf(LAYOUT_SHEET_KEYWORD) >= 0) { target = sheets[i]; break; }
+    }
+    if (!target) target = sheets[0];
+    var gid = target.getSheetId();
+    var url = "https://docs.google.com/spreadsheets/d/" + ssId + "/export?format=pdf"
+      + "&gid=" + gid
+      + "&portrait=false"      // 橫向（賣場配置圖通常較寬）
+      + "&fitw=true"           // 縮放符合頁寬，盡量不切欄
+      + "&gridlines=false"
+      + "&sheetnames=false&printtitle=false&pagenumbers=false"
+      + "&top_margin=0.3&bottom_margin=0.3&left_margin=0.3&right_margin=0.3";
+    var resp = UrlFetchApp.fetch(url, { headers: { Authorization: "Bearer " + ScriptApp.getOAuthToken() } });
+    return resp.getBlob();
+  } finally {
+    try { Drive.Files.remove(ssId); } catch (e) {}
+  }
+}
+
+// 單張 Layout PDF 下載：把指定 Drive Excel 轉成 PDF，回傳 base64
+function layoutPdf(fileUrl, fileName) {
+  var id = extractDriveId(fileUrl);
+  if (!id) return { error: "找不到檔案" };
+  var pdf = layoutExcelToPdf(id);
+  var name = String(fileName || "layout").replace(/\.(xlsx|xls)$/i, "") + ".pdf";
+  return { ok: true, filename: name, base64: Utilities.base64Encode(pdf.getBytes()) };
 }
 
 /* ---------- 主檔／庫存檔（資料量大：一個資料集 = 一個工作表，一列一筆） ----------

@@ -272,26 +272,27 @@ function findLabeledTotal(aoa, label) {
   return null;
 }
 
-// 將後端回傳的 base64 zip 觸發瀏覽器下載
-function downloadBase64Zip(filename, base64) {
+// 將後端回傳的 base64 內容觸發瀏覽器下載（mime 預設 zip）
+function downloadBase64File(filename, base64, mime) {
   const bin = atob(base64);
   const bytes = new Uint8Array(bin.length);
   for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-  const blob = new Blob([bytes], { type: "application/zip" });
+  const blob = new Blob([bytes], { type: mime || "application/zip" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url; a.download = filename;
   document.body.appendChild(a); a.click(); document.body.removeChild(a);
   URL.revokeObjectURL(url);
 }
+function downloadBase64Zip(filename, base64) { downloadBase64File(filename, base64, "application/zip"); }
 
 // 批次下載一批「一檔一店」的原始檔案：雲端模式交由後端打包成單一 zip（避免瀏覽器端抓 Drive 檔案的 CORS 限制）；
 // 本機開發模式（無 Drive）則改為依序逐個觸發下載
-async function bulkDownloadFiles(list, zipBaseName, toast) {
+async function bulkDownloadFiles(list, zipBaseName, toast, asLayoutPdf) {
   if (list.length === 0) { toast("本月尚無已上傳的檔案"); return; }
   if (InventoryAPI.cloud()) {
     try {
-      const z = await InventoryAPI.zipFiles(list.map((l) => ({ fileUrl: l.fileUrl, fileName: l.fileName })), zipBaseName);
+      const z = await InventoryAPI.zipFiles(list.map((l) => ({ fileUrl: l.fileUrl, fileName: l.fileName })), zipBaseName, asLayoutPdf);
       if (z) { downloadBase64Zip(z.filename, z.base64); toast(`已下載本月 ${list.length} 份檔案（zip）✔`); return; }
     } catch (err) { toast("打包下載失敗，請確認網路後再試"); return; }
   }
@@ -673,6 +674,7 @@ function LayoutZone({ db, setDB, month, setMonth, toast }) {
   const [filters, setFilters] = useState({});
   const setF = (k, v) => setFilters((p) => ({ ...p, [k]: v }));
   const [busy, setBusy] = useState("");
+  const [dlBusy, setDlBusy] = useState("");
   const [downloadingAll, setDownloadingAll] = useState(false);
   const brand = db.brands.find((b) => b.id === brandId);
 
@@ -705,11 +707,30 @@ function LayoutZone({ db, setDB, month, setMonth, toast }) {
     reader.readAsDataURL(f);
   };
 
-  // 本月總表下載：一店一檔，不合併，交由伺服器端打包成 zip（或本機模式依序下載）
+  // 單店下載：上傳的是 Excel，下載時交由後端把「賣場+倉庫 LAYOUT」那張分頁轉成 PDF 後回傳
+  const downloadOne = async (store, l) => {
+    setDlBusy(store.id);
+    try {
+      const pdf = await InventoryAPI.layoutPdf(l.fileUrl, l.fileName);
+      if (pdf) {
+        downloadBase64File(pdf.filename, pdf.base64, "application/pdf");
+        toast(`已下載「${store.name}」Layout 圖（PDF）✔`);
+      } else {
+        // 本機開發模式（無後端轉檔）：直接下載原始檔
+        const a = document.createElement("a");
+        a.href = l.fileUrl; a.download = l.fileName; a.target = "_blank"; a.rel = "noreferrer";
+        document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      }
+    } catch (err) {
+      toast("下載失敗，請確認網路後再試");
+    } finally { setDlBusy(""); }
+  };
+
+  // 本月總表下載：一店一檔，不合併；交由伺服器端把每張 Layout 轉成 PDF 再打包成 zip（本機模式依序下載原檔）
   const downloadAll = async () => {
     const list = (db.layouts || []).filter((l) => l.month === month && db.stores.some((s) => s.id === l.storeId && s.brandId === brandId));
     setDownloadingAll(true);
-    try { await bulkDownloadFiles(list, `${brand ? brand.name : ""}Layout圖_${month}`, toast); }
+    try { await bulkDownloadFiles(list, `${brand ? brand.name : ""}Layout圖_${month}`, toast, true); }
     finally { setDownloadingAll(false); }
   };
 
@@ -762,7 +783,9 @@ function LayoutZone({ db, setDB, month, setMonth, toast }) {
                           {busy === s.id ? "上傳中…" : "⬆ 上傳"}
                           <input type="file" accept=".xlsx,.xls" className="hidden" disabled={busy === s.id} onChange={onUpload(s)} />
                         </label>
-                        {l && <a href={l.fileUrl} target="_blank" rel="noreferrer" className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-sm rounded-lg">⬇ 下載</a>}
+                        {l && <button onClick={() => downloadOne(s, l)} disabled={dlBusy === s.id}
+                          className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 disabled:bg-slate-400 text-white text-sm rounded-lg">
+                          {dlBusy === s.id ? "轉檔中…" : "⬇ 下載PDF"}</button>}
                       </div>
                     </td>
                   </tr>
