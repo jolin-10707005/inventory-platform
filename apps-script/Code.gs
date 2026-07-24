@@ -39,35 +39,40 @@ function doGet(e) {
 }
 
 function doPost(e) {
-  var body = JSON.parse(e.postData.contents);
-  switch (body.action) {
-    case "replaceTab":
-      replaceTab(body.tab, body.rows);
-      return jsonOut({ ok: true });
-    case "append":
-      appendRow(body.tab, body.row);
-      return jsonOut({ ok: true });
-    case "uploadPhoto":
-      return jsonOut({ ok: true, url: uploadPhoto(body.dataUrl, body.filename) });
-    case "uploadManual":
-      return jsonOut({ ok: true, url: uploadManual(body.dataUrl, body.filename, body.brandName) });
-    case "uploadLayout":
-      return jsonOut({ ok: true, url: uploadLayout(body.dataUrl, body.filename, body.brandName) });
-    case "uploadCountSheet":
-      return jsonOut({ ok: true, url: uploadCountSheet(body.dataUrl, body.filename, body.brandName) });
-    case "zipFiles":
-      return jsonOut(zipFiles(body.files, body.zipName, body.asLayoutPdf));
-    case "layoutPdf":
-      return jsonOut(layoutPdf(body.fileUrl, body.fileName));
-    case "putMaster":
-      putMaster(body.rec);
-      return jsonOut({ ok: true });
-    case "putMasterBatch":
-      return jsonOut({ ok: true, storeIds: putMasterBatch(body) });
-    case "deleteMastersByFile":
-      return jsonOut({ ok: true, removed: deleteMastersByFile(body.srcFile, body.month) });
-    default:
-      return jsonOut({ error: "unknown action: " + body.action });
+  // 統一包 try/catch：後端出錯時回傳看得懂的 JSON 錯誤訊息（含堆疊），前端才不會只看到霧霧的 CORS/失敗
+  try {
+    var body = JSON.parse(e.postData.contents);
+    switch (body.action) {
+      case "replaceTab":
+        replaceTab(body.tab, body.rows);
+        return jsonOut({ ok: true });
+      case "append":
+        appendRow(body.tab, body.row);
+        return jsonOut({ ok: true });
+      case "uploadPhoto":
+        return jsonOut({ ok: true, url: uploadPhoto(body.dataUrl, body.filename) });
+      case "uploadManual":
+        return jsonOut({ ok: true, url: uploadManual(body.dataUrl, body.filename, body.brandName) });
+      case "uploadLayout":
+        return jsonOut({ ok: true, url: uploadLayout(body.dataUrl, body.filename, body.brandName) });
+      case "uploadCountSheet":
+        return jsonOut({ ok: true, url: uploadCountSheet(body.dataUrl, body.filename, body.brandName) });
+      case "zipFiles":
+        return jsonOut(zipFiles(body.files, body.zipName, body.asLayoutPdf));
+      case "layoutPdf":
+        return jsonOut(layoutPdf(body.fileUrl, body.fileName));
+      case "putMaster":
+        putMaster(body.rec);
+        return jsonOut({ ok: true });
+      case "putMasterBatch":
+        return jsonOut({ ok: true, storeIds: putMasterBatch(body) });
+      case "deleteMastersByFile":
+        return jsonOut({ ok: true, removed: deleteMastersByFile(body.srcFile, body.month) });
+      default:
+        return jsonOut({ error: "unknown action: " + body.action });
+    }
+  } catch (err) {
+    return jsonOut({ error: String(err && err.message ? err.message : err) });
   }
 }
 
@@ -579,4 +584,32 @@ function cleanupOldSheets() {
   });
   Logger.log("已刪除 " + removed.length + " 個分頁：" + removed.join(", "));
   return removed;
+}
+
+/* ============================================================
+ * 診斷用：檢查 Layout Excel→PDF 轉檔為何失敗
+ * 用法：在 Apps Script 編輯器上方函式清單選「diagnoseLayout」→ 按 ▶ 執行（不需重新部署），看下方執行記錄
+ * 會逐步印出：Drive 進階服務是否啟用、拿到的測試檔、實際轉檔有沒有成功／錯在哪
+ * ============================================================ */
+function diagnoseLayout() {
+  Logger.log("① typeof Drive = " + (typeof Drive));
+  if (typeof Drive === "undefined") {
+    Logger.log("!! Drive 進階服務未啟用。請在編輯器左側『服務 +』加入 Drive API，存檔後再執行一次本函式。");
+    return;
+  }
+  Logger.log("② typeof Drive.Files = " + (typeof Drive.Files) + "；typeof Drive.Files.insert = " + (Drive.Files ? typeof Drive.Files.insert : "N/A"));
+  var rows = readTab("layouts");
+  Logger.log("③ layouts 分頁筆數 = " + rows.length);
+  if (!rows.length) { Logger.log("!! layouts 分頁沒有資料，請先在平台上傳一張 Layout 圖再測。"); return; }
+  var last = rows[rows.length - 1];
+  Logger.log("④ 測試檔 fileName = " + last.fileName + "；fileUrl = " + last.fileUrl);
+  var id = extractDriveId(last.fileUrl);
+  Logger.log("⑤ 解析出的 fileId = " + id);
+  if (!id) { Logger.log("!! fileUrl 解析不出 Drive 檔案 ID。"); return; }
+  try {
+    var pdf = layoutExcelToPdf(id);
+    Logger.log("⑥ 轉檔成功！PDF 大小 = " + pdf.getBytes().length + " bytes");
+  } catch (err) {
+    Logger.log("⑥ 轉檔失敗：" + (err && err.stack ? err.stack : err));
+  }
 }

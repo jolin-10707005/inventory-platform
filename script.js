@@ -722,7 +722,7 @@ function LayoutZone({ db, setDB, month, setMonth, toast }) {
         document.body.appendChild(a); a.click(); document.body.removeChild(a);
       }
     } catch (err) {
-      toast("下載失敗，請確認網路後再試");
+      toast("下載失敗：" + (err && err.message ? err.message : "請確認網路後再試"));
     } finally { setDlBusy(""); }
   };
 
