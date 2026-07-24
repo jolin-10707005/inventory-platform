@@ -737,8 +737,10 @@ function DownloadZone({
       let filename;
       if (type === "stock") {
         // 庫存檔：店號店名-結轉用-庫存件數（庫存件數＝該店庫存數量欄加總）
+        // 祥豐倉（category==="祥豐倉"）例外：只要「店名-結轉用-件數」，不加店號
         const totalQty = m.rows.reduce((a, r) => a + num(r[QTY_COL]), 0);
-        filename = `${store.code}${store.name}-結轉用-${totalQty}.xlsx`;
+        const prefix = store.category === "祥豐倉" ? "" : store.code || "";
+        filename = `${prefix}${store.name}-結轉用-${totalQty}.xlsx`;
       } else {
         const idxEntry = index.find(x => x.storeId === key && x.month === month && x.type === type);
         const dateStr = idxEntry && idxEntry.srcDate ? idxEntry.srcDate : new Date().toISOString().slice(0, 10).replace(/-/g, "");
