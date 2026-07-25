@@ -314,6 +314,26 @@ function downloadBase64File(filename, base64, mime) {
 }
 function downloadBase64Zip(filename, base64) { downloadBase64File(filename, base64, "application/zip"); }
 
+// 依「盤點日期」把每個檔案分進對應資料夾（zip 內路徑），檔名保留原始上傳檔名不變；
+// 只有當同一個日期資料夾內真的出現重複檔名時，才在副檔名前加 -1/-2... 加以區隔，避免 Utilities.zip 因撞名整包失敗。
+// items：{ fileName, storeId, ... } 陣列；getStore(storeId) 用來查該筆對應的店鋪（取 auditDate）
+function assignZipFolders(items, getStore) {
+  const seen = {};
+  return items.map((item) => {
+    const s = getStore(item.storeId);
+    // auditDate 原始格式常帶 "/"（如 "2025/1/7"），"/" 在 zip 路徑裡會被當成資料夾分層，換成 "-" 才會是單一層日期資料夾
+    const folder = (s && s.auditDate) ? String(s.auditDate).replace(/[\/\\]/g, "-") : "未分類日期";
+    const dot = item.fileName.lastIndexOf(".");
+    const base = dot >= 0 ? item.fileName.slice(0, dot) : item.fileName;
+    const ext = dot >= 0 ? item.fileName.slice(dot) : "";
+    let name = item.fileName;
+    let n = 1;
+    while (seen[`${folder}/${name}`]) { name = `${base}-${n}${ext}`; n++; }
+    seen[`${folder}/${name}`] = true;
+    return { ...item, fileName: `${folder}/${name}` };
+  });
+}
+
 // 批次下載一批「一檔一店」的原始檔案：雲端模式交由後端打包成單一 zip（避免瀏覽器端抓 Drive 檔案的 CORS 限制）；
 // 本機開發模式（無 Drive）則改為依序逐個觸發下載
 async function bulkDownloadFiles(list, zipBaseName, toast, asLayoutPdf) {
@@ -641,14 +661,8 @@ function CountUploadZone({ db, setDB, month, setMonth, toast }) {
 
   // 本月總表下載：一店一檔，不合併，交由伺服器端打包成 zip（或本機模式依序下載）
   const downloadAllCounts = async () => {
-    // 打包時放進各店自己的子資料夾（用店號當資料夾名），檔名本身保留原始上傳檔名不變——
-    // 不同店的原始上傳檔名剛好相同時，Utilities.zip 只看檔名會因為重複而整包失敗，用子資料夾分開就不會撞名
-    const list = (db.countTotals || [])
-      .filter((c) => c.month === month && db.stores.some((s) => s.id === c.storeId && s.brandId === brandId))
-      .map((c) => {
-        const s = db.stores.find((st) => st.id === c.storeId);
-        return { ...c, fileName: s ? `${s.code || s.name}/${c.fileName}` : c.fileName };
-      });
+    const raw = (db.countTotals || []).filter((c) => c.month === month && db.stores.some((s) => s.id === c.storeId && s.brandId === brandId));
+    const list = assignZipFolders(raw, (storeId) => db.stores.find((s) => s.id === storeId));
     setDownloadingAll(true);
     try { await bulkDownloadFiles(list, `${brand ? brand.name : ""}盤點總表_${month}`, toast); }
     finally { setDownloadingAll(false); }
@@ -851,14 +865,8 @@ function LayoutZone({ db, setDB, month, setMonth, toast }) {
   // 本月Layout圖下載：一店一檔，不合併；交由伺服器端打包成 zip（本機模式依序下載原檔）。
   // asPdf=true 時伺服器會先把每張 Excel 轉成 PDF 再打包；asPdf=false 直接打包原始 Excel 檔。
   const downloadAll = (asPdf) => async () => {
-    // 打包時放進各店自己的子資料夾（用店號當資料夾名），檔名本身保留原始上傳檔名不變——
-    // 不同店的原始上傳檔名剛好相同時，Utilities.zip 只看檔名會因為重複而整包失敗，用子資料夾分開就不會撞名
-    const list = (db.layouts || [])
-      .filter((l) => l.month === month && db.stores.some((s) => s.id === l.storeId && s.brandId === brandId))
-      .map((l) => {
-        const s = db.stores.find((st) => st.id === l.storeId);
-        return { ...l, fileName: s ? `${s.code || s.name}/${l.fileName}` : l.fileName };
-      });
+    const raw = (db.layouts || []).filter((l) => l.month === month && db.stores.some((s) => s.id === l.storeId && s.brandId === brandId));
+    const list = assignZipFolders(raw, (storeId) => db.stores.find((s) => s.id === storeId));
     setDownloadingAll(asPdf ? "pdf" : "excel");
     try { await bulkDownloadFiles(list, `${brand ? brand.name : ""}Layout圖_${month}${asPdf ? "(PDF)" : "(Excel)"}`, toast, asPdf); }
     finally { setDownloadingAll(""); }
