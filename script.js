@@ -541,24 +541,37 @@ function DownloadZone({ db, month, setMonth, toast }) {
 // 盤點總表摘要值固定標籤（檔案最後幾列的固定格式，位置隨資料筆數變動，逐列掃描比對）
 const COUNT_TOTAL_LABEL = "合計盤點總數";
 
-// 儀表板：應傳／已傳／未傳店數 + 匯出未傳名單（盤點總表上傳、盤點作業情況紀錄共用）
+// 儀表板：應傳／已傳／未傳店數（進度條）＋ 匯出未傳名單（盤點總表上傳、盤點作業情況紀錄共用）
 function StatusDashboard({ total, done, onExport }) {
   const notDone = Math.max(0, total - done);
-  const Card = ({ label, value, cls }) => (
-    <div className={"rounded-xl border px-5 py-3 min-w-[108px] " + cls}>
-      <div className="text-xs opacity-70">{label}</div>
-      <div className="text-2xl font-bold mt-0.5">{value}<span className="text-sm font-normal opacity-60 ml-1">家</span></div>
-    </div>
-  );
+  const pct = total > 0 ? Math.round((done / total) * 100) : 0;
   return (
-    <div className="mb-4 flex flex-wrap gap-3 items-center">
-      <Card label="應傳店數" value={total} cls="bg-slate-50 border-slate-200 text-slate-700" />
-      <Card label="已傳店數" value={done} cls="bg-emerald-50 border-emerald-200 text-emerald-700" />
-      <Card label="未傳店數" value={notDone} cls="bg-amber-50 border-amber-200 text-amber-700" />
-      <button onClick={onExport} disabled={notDone === 0}
-        className="px-4 py-2 bg-rose-600 hover:bg-rose-700 disabled:bg-slate-300 text-white text-sm rounded-lg">
-        ⬇ 匯出未傳名單
-      </button>
+    <div className="mb-4 flex gap-4 items-center bg-white rounded-xl border border-slate-200 px-5 py-4">
+      <div className="w-2/3 flex flex-col gap-3">
+        <div className="flex justify-between items-baseline">
+          <span className="text-sm text-slate-500">已傳店數</span>
+          <span className="text-sm text-slate-500"><span className="text-xl font-bold text-emerald-600">{done}</span> / {total} 家</span>
+        </div>
+        <div className="w-full h-2.5 rounded-full bg-amber-100 overflow-hidden">
+          <div className="h-full rounded-full bg-emerald-500" style={{ width: `${pct}%` }} />
+        </div>
+        <div className="flex gap-6 mt-1">
+          <div>
+            <div className="text-xs text-slate-500">應傳店數</div>
+            <div className="text-xl font-bold text-slate-700">{total}<span className="text-xs font-normal text-slate-400 ml-1">家</span></div>
+          </div>
+          <div>
+            <div className="text-xs text-slate-500">未傳店數</div>
+            <div className="text-xl font-bold text-amber-600">{notDone}<span className="text-xs font-normal text-slate-400 ml-1">家</span></div>
+          </div>
+        </div>
+      </div>
+      <div className="w-1/3 flex justify-end">
+        <button onClick={onExport} disabled={notDone === 0}
+          className="px-4 py-2 bg-rose-600 hover:bg-rose-700 disabled:bg-slate-300 text-white text-sm rounded-lg">
+          ⬇ 匯出未傳名單
+        </button>
+      </div>
     </div>
   );
 }
@@ -633,7 +646,9 @@ function CountUploadZone({ db, setDB, month, setMonth, toast }) {
   };
 
   return (
-    <SectionCard title="📋 盤點總表上傳" subtitle="盤點人員上傳實地盤點後的實盤數量表（Excel）；分倉各自獨立上傳，重新上傳會取代舊檔">
+    <div className="space-y-6">
+      {brandId && <StatusDashboard total={totalStores} done={uploadedCount} onExport={exportNotUploaded} />}
+      <SectionCard title="📋 盤點總表上傳" subtitle="盤點人員上傳實地盤點後的實盤數量表（Excel）；分倉各自獨立上傳，重新上傳會取代舊檔">
       <div className="flex flex-wrap gap-3 items-center">
         <BrandStoreSelect db={db} brandId={brandId} month={month} onBrand={setBrandId} showStore={false} />
         <input type="month" value={month} onChange={(e) => setMonth(e.target.value)} title="盤點月份"
@@ -643,8 +658,6 @@ function CountUploadZone({ db, setDB, month, setMonth, toast }) {
           {downloadingAll ? "下載中…" : "⬇ 本月總表下載"}
         </button>
       </div>
-
-      {brandId && <div className="mt-4"><StatusDashboard total={totalStores} done={uploadedCount} onExport={exportNotUploaded} /></div>}
 
       {brandId && (
         <div className="table-scroll mt-4">
@@ -704,7 +717,8 @@ function CountUploadZone({ db, setDB, month, setMonth, toast }) {
         </div>
       )}
       {!brandId && <p className="mt-4 text-sm text-slate-400">請先選擇品牌以顯示店鋪清單</p>}
-    </SectionCard>
+      </SectionCard>
+    </div>
   );
 }
 

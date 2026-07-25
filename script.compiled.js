@@ -913,45 +913,54 @@ function DownloadZone({
 // 盤點總表摘要值固定標籤（檔案最後幾列的固定格式，位置隨資料筆數變動，逐列掃描比對）
 const COUNT_TOTAL_LABEL = "合計盤點總數";
 
-// 儀表板：應傳／已傳／未傳店數 + 匯出未傳名單（盤點總表上傳、盤點作業情況紀錄共用）
+// 儀表板：應傳／已傳／未傳店數（進度條）＋ 匯出未傳名單（盤點總表上傳、盤點作業情況紀錄共用）
 function StatusDashboard({
   total,
   done,
   onExport
 }) {
   const notDone = Math.max(0, total - done);
-  const Card = ({
-    label,
-    value,
-    cls
-  }) => /*#__PURE__*/React.createElement("div", {
-    className: "rounded-xl border px-5 py-3 min-w-[108px] " + cls
-  }, /*#__PURE__*/React.createElement("div", {
-    className: "text-xs opacity-70"
-  }, label), /*#__PURE__*/React.createElement("div", {
-    className: "text-2xl font-bold mt-0.5"
-  }, value, /*#__PURE__*/React.createElement("span", {
-    className: "text-sm font-normal opacity-60 ml-1"
-  }, "家")));
+  const pct = total > 0 ? Math.round(done / total * 100) : 0;
   return /*#__PURE__*/React.createElement("div", {
-    className: "mb-4 flex flex-wrap gap-3 items-center"
-  }, /*#__PURE__*/React.createElement(Card, {
-    label: "應傳店數",
-    value: total,
-    cls: "bg-slate-50 border-slate-200 text-slate-700"
-  }), /*#__PURE__*/React.createElement(Card, {
-    label: "已傳店數",
-    value: done,
-    cls: "bg-emerald-50 border-emerald-200 text-emerald-700"
-  }), /*#__PURE__*/React.createElement(Card, {
-    label: "未傳店數",
-    value: notDone,
-    cls: "bg-amber-50 border-amber-200 text-amber-700"
-  }), /*#__PURE__*/React.createElement("button", {
+    className: "mb-4 flex gap-4 items-center bg-white rounded-xl border border-slate-200 px-5 py-4"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "w-2/3 flex flex-col gap-3"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "flex justify-between items-baseline"
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "text-sm text-slate-500"
+  }, "已傳店數"), /*#__PURE__*/React.createElement("span", {
+    className: "text-sm text-slate-500"
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "text-xl font-bold text-emerald-600"
+  }, done), " / ", total, " 家")), /*#__PURE__*/React.createElement("div", {
+    className: "w-full h-2.5 rounded-full bg-amber-100 overflow-hidden"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "h-full rounded-full bg-emerald-500",
+    style: {
+      width: `${pct}%`
+    }
+  })), /*#__PURE__*/React.createElement("div", {
+    className: "flex gap-6 mt-1"
+  }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    className: "text-xs text-slate-500"
+  }, "應傳店數"), /*#__PURE__*/React.createElement("div", {
+    className: "text-xl font-bold text-slate-700"
+  }, total, /*#__PURE__*/React.createElement("span", {
+    className: "text-xs font-normal text-slate-400 ml-1"
+  }, "家"))), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    className: "text-xs text-slate-500"
+  }, "未傳店數"), /*#__PURE__*/React.createElement("div", {
+    className: "text-xl font-bold text-amber-600"
+  }, notDone, /*#__PURE__*/React.createElement("span", {
+    className: "text-xs font-normal text-slate-400 ml-1"
+  }, "家"))))), /*#__PURE__*/React.createElement("div", {
+    className: "w-1/3 flex justify-end"
+  }, /*#__PURE__*/React.createElement("button", {
     onClick: onExport,
     disabled: notDone === 0,
     className: "px-4 py-2 bg-rose-600 hover:bg-rose-700 disabled:bg-slate-300 text-white text-sm rounded-lg"
-  }, "⬇ 匯出未傳名單"));
+  }, "⬇ 匯出未傳名單")));
 }
 
 // 產出「未傳店鋪名單」Excel（儀表板共用）：notDoneStores 為尚未完成的店鋪陣列
@@ -1045,7 +1054,13 @@ function CountUploadZone({
     };
     reader.readAsDataURL(f);
   };
-  return /*#__PURE__*/React.createElement(SectionCard, {
+  return /*#__PURE__*/React.createElement("div", {
+    className: "space-y-6"
+  }, brandId && /*#__PURE__*/React.createElement(StatusDashboard, {
+    total: totalStores,
+    done: uploadedCount,
+    onExport: exportNotUploaded
+  }), /*#__PURE__*/React.createElement(SectionCard, {
     title: "📋 盤點總表上傳",
     subtitle: "盤點人員上傳實地盤點後的實盤數量表（Excel）；分倉各自獨立上傳，重新上傳會取代舊檔"
   }, /*#__PURE__*/React.createElement("div", {
@@ -1067,12 +1082,6 @@ function CountUploadZone({
     disabled: downloadingAll || !brandId,
     className: "px-3 py-2 bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-400 text-white text-sm rounded-lg"
   }, downloadingAll ? "下載中…" : "⬇ 本月總表下載")), brandId && /*#__PURE__*/React.createElement("div", {
-    className: "mt-4"
-  }, /*#__PURE__*/React.createElement(StatusDashboard, {
-    total: totalStores,
-    done: uploadedCount,
-    onExport: exportNotUploaded
-  })), brandId && /*#__PURE__*/React.createElement("div", {
     className: "table-scroll mt-4"
   }, /*#__PURE__*/React.createElement("table", {
     className: "w-full text-sm"
@@ -1174,7 +1183,7 @@ function CountUploadZone({
     className: "py-6 text-center text-slate-400"
   }, "查無符合條件的店鋪"))))), !brandId && /*#__PURE__*/React.createElement("p", {
     className: "mt-4 text-sm text-slate-400"
-  }, "請先選擇品牌以顯示店鋪清單"));
+  }, "請先選擇品牌以顯示店鋪清單")));
 }
 
 /* ============================================================
