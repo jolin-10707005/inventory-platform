@@ -987,10 +987,14 @@ function CountUploadZone({
   }));
   const stores = sortStoresByDateCode(baseStores.filter(s => matchFilters(s, filters)));
 
-  // 儀表板統計（以本品牌本月全部店鋪為母體，不受表格上方篩選影響）
-  const totalStores = baseStores.length;
-  const uploadedCount = baseStores.filter(s => countOf(s.id)).length;
-  const exportNotUploaded = () => exportNotDoneList(baseStores.filter(s => !countOf(s.id)), `${brand ? brand.name : ""}盤點總表未傳名單_${month}.xlsx`, toast, "已上傳");
+  // 儀表板統計（不受表格上方篩選影響）：母體＝主店 + 有庫存數的分倉。
+  // 「有庫存數的分倉」＝該分倉本月有產製庫存檔（mastersIndex 有該店 stock 記錄；分倉庫存檔是從客戶庫存檔切出來的，有切出來代表有庫存資料）
+  const idx = db.mastersIndex || [];
+  const hasStock = storeId => idx.some(m => m.storeId === storeId && m.month === month && m.type === "stock");
+  const dashStores = baseStores.filter(s => !s.isSub || hasStock(s.id));
+  const totalStores = dashStores.length;
+  const uploadedCount = dashStores.filter(s => countOf(s.id)).length;
+  const exportNotUploaded = () => exportNotDoneList(dashStores.filter(s => !countOf(s.id)), `${brand ? brand.name : ""}盤點總表未傳名單_${month}.xlsx`, toast, "已上傳");
 
   // 本月總表下載：一店一檔，不合併，交由伺服器端打包成 zip（或本機模式依序下載）
   const downloadAllCounts = async () => {
@@ -1518,9 +1522,9 @@ function FillZone({
   });
   const myRecords = allRecords.filter(r => matchFilters(r, filters));
 
-  // 儀表板統計：以表單目前選的品牌為範圍，本品牌本月全部店鋪為母體；「已填」＝該店本月已有任一筆盤點紀錄
+  // 儀表板統計：以表單目前選的品牌為範圍；母體只算主店（分倉是同一實體店的虛擬切分，作業紀錄一場只填一筆）；「已填」＝該店本月已有任一筆盤點紀錄
   const dashBrand = db.brands.find(b => b.id === form.brandId);
-  const dashStores = db.stores.filter(s => s.brandId === form.brandId && s.month === month);
+  const dashStores = db.stores.filter(s => s.brandId === form.brandId && s.month === month && !s.isSub);
   const filledCount = dashStores.filter(s => db.records.some(r => r.storeId === s.id && r.month === month)).length;
   const exportNotFilled = () => exportNotDoneList(dashStores.filter(s => !db.records.some(r => r.storeId === s.id && r.month === month)), `${dashBrand ? dashBrand.name : ""}盤點紀錄未填名單_${month}.xlsx`, toast, "已填寫");
   const Err = ({
