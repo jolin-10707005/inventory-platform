@@ -60,7 +60,7 @@ function doPost(e) {
       case "zipFiles":
         return jsonOut(zipFiles(body.files, body.zipName, body.asLayoutPdf));
       case "layoutPdf":
-        return jsonOut(layoutPdf(body.fileUrl, body.fileName));
+        return jsonOut(layoutPdf(body.fileUrl, body.fileName, body.printRange));
       case "putMaster":
         putMaster(body.rec);
         return jsonOut({ ok: true });
@@ -211,7 +211,7 @@ function zipFiles(files, zipName, asLayoutPdf) {
     if (!id) return;
     var blob, fname;
     if (asLayoutPdf) {
-      blob = layoutExcelToPdf(id);
+      blob = layoutExcelToPdf(id, f.printRange);
       fname = String(f.fileName || blob.getName()).replace(/\.(xlsx|xls)$/i, "") + ".pdf";
     } else {
       blob = DriveApp.getFileById(id).getBlob();
@@ -239,7 +239,19 @@ function importXlsxToGoogleSheet(blob, title) {
   return Drive.Files.create({ name: title, mimeType: MimeType.GOOGLE_SHEETS }, blob).id;
 }
 
-function layoutExcelToPdf(fileId) {
+// 把 "A1:Q33" 這種 A1 記號範圍字串轉成 export URL 用的 {r1,c1,r2,c2}（0-based 起點、計數式終點）；解析不出來回傳 null
+function parseA1Range(rangeStr) {
+  if (!rangeStr) return null;
+  var m = String(rangeStr).replace(/\$/g, "").match(/^([A-Z]+)(\d+):([A-Z]+)(\d+)$/i);
+  if (!m) return null;
+  var colToNum = function (s) { s = s.toUpperCase(); var n = 0; for (var k = 0; k < s.length; k++) n = n * 26 + (s.charCodeAt(k) - 64); return n; };
+  return { c1: colToNum(m[1]) - 1, r1: Number(m[2]) - 1, c2: colToNum(m[3]), r2: Number(m[4]) };
+}
+
+// printRange：前端上傳 Layout 圖時，用 SheetJS 從 Excel 原檔讀出的實際列印範圍（如 "A1:Q33"），見 script.js 的 readLayoutPrintRange。
+// 有給就照這個範圍轉檔；沒有（舊資料、或原檔沒設定列印範圍）才退回用「實際有填內容」的儲存格自動抓範圍——
+// 不能用 getLastRow()/getLastColumn()，那兩個連只有背景色/框線等格式、沒有內容的儲存格也算進去，範圍會抓過大。
+function layoutExcelToPdf(fileId, printRange) {
   var xlsxFile = DriveApp.getFileById(fileId);
   var ssId = importXlsxToGoogleSheet(xlsxFile.getBlob(), "_tmp_layout_" + fileId);
   try {
@@ -251,13 +263,35 @@ function layoutExcelToPdf(fileId) {
     }
     if (!target) target = sheets[0];
     var gid = target.getSheetId();
+
+    var area = parseA1Range(printRange);
+    var r1, c1, r2, c2;
+    if (area) {
+      r1 = area.r1; c1 = area.c1; r2 = area.r2; c2 = area.c2;
+    } else {
+      var values = target.getDataRange().getValues();
+      var maxRow = 0, maxCol = 0;
+      for (var r = 0; r < values.length; r++) {
+        for (var c = 0; c < values[r].length; c++) {
+          if (values[r][c] !== "" && values[r][c] !== null) {
+            if (r + 1 > maxRow) maxRow = r + 1;
+            if (c + 1 > maxCol) maxCol = c + 1;
+          }
+        }
+      }
+      r1 = 0; c1 = 0; r2 = maxRow; c2 = maxCol;
+    }
+    Logger.log("(列印範圍) sheet=" + target.getName() + " → r1=" + r1 + " c1=" + c1 + " r2=" + r2 + " c2=" + c2
+      + (area ? "（來自上傳時的 Print_Area）" : "（自動抓取內容範圍，備援）"));
+
     var url = "https://docs.google.com/spreadsheets/d/" + ssId + "/export?format=pdf"
       + "&gid=" + gid
       + "&portrait=false"      // 橫向（賣場配置圖通常較寬）
-      + "&fitw=true"           // 縮放符合頁寬，盡量不切欄
+      + "&scale=4"             // 縮放符合整頁（寬高都縮），強制擠進單一頁，不會因為內容較高就自動分頁
       + "&gridlines=false"
       + "&sheetnames=false&printtitle=false&pagenumbers=false"
-      + "&top_margin=0.3&bottom_margin=0.3&left_margin=0.3&right_margin=0.3";
+      + "&top_margin=0.3&bottom_margin=0.3&left_margin=0.3&right_margin=0.3"
+      + "&r1=" + r1 + "&c1=" + c1 + "&r2=" + r2 + "&c2=" + c2;
     var resp = UrlFetchApp.fetch(url, { headers: { Authorization: "Bearer " + ScriptApp.getOAuthToken() } });
     return resp.getBlob();
   } finally {
@@ -267,10 +301,10 @@ function layoutExcelToPdf(fileId) {
 }
 
 // 單張 Layout PDF 下載：把指定 Drive Excel 轉成 PDF，回傳 base64
-function layoutPdf(fileUrl, fileName) {
+function layoutPdf(fileUrl, fileName, printRange) {
   var id = extractDriveId(fileUrl);
   if (!id) return { error: "找不到檔案" };
-  var pdf = layoutExcelToPdf(id);
+  var pdf = layoutExcelToPdf(id, printRange);
   var name = String(fileName || "layout").replace(/\.(xlsx|xls)$/i, "") + ".pdf";
   return { ok: true, filename: name, base64: Utilities.base64Encode(pdf.getBytes()) };
 }
@@ -612,7 +646,7 @@ function diagnoseLayout() {
   Logger.log("⑤ 解析出的 fileId = " + id);
   if (!id) { Logger.log("!! fileUrl 解析不出 Drive 檔案 ID。"); return; }
   try {
-    var pdf = layoutExcelToPdf(id);
+    var pdf = layoutExcelToPdf(id, last.printRange);
     Logger.log("⑥ 轉檔成功！PDF 大小 = " + pdf.getBytes().length + " bytes");
   } catch (err) {
     Logger.log("⑥ 轉檔失敗：" + (err && err.stack ? err.stack : err));

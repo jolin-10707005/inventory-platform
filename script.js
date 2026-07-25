@@ -70,7 +70,7 @@ const seedDB = {
   aliases: [], // 店名對應記憶（庫存檔用）：{ brandId, key(正規化欄標題), storeId }
   categoryAliases: [], // 種類對應記憶（主檔用，跟店鋪對應分開存）：{ brandId, key(正規化欄標題), category }
   manuals: [], // 盤點手冊：{ brandId, fileName, fileUrl, uploadedAt }（一品牌一份，不分店鋪種類）
-  layouts: [], // Layout 圖：{ storeId, month, fileName, fileUrl, uploadedAt }（一店一份，只列主店不含分倉，原檔存 Drive）
+  layouts: [], // Layout 圖：{ storeId, month, fileName, fileUrl, printRange, uploadedAt }（一店一份，只列主店不含分倉，原檔存 Drive；printRange 為上傳時從 Excel 讀出的實際列印範圍，如 "A1:Q33"）
   countTotals: [], // 盤點總表：{ storeId, month, fileName, fileUrl, total, uploadedAt }（一店一檔，原檔存 Drive，只擷取「合計盤點總數」）
   opsMargins: [], // 作業分析「損益分析」歷史毛利%：{ brandId, storeId, month, marginPercent }，每次匯出時存當月各店毛利%，供下個月匯出時查「上期毛利%」
 };
@@ -259,6 +259,27 @@ function readXLSXMatrix(file) {
   });
 }
 
+// 從 Layout Excel 原檔讀出「賣場+倉庫 LAYOUT」分頁實際設定的列印範圍（Print_Area），上傳時一併存起來，
+// 下載轉 PDF 時後端直接照這個範圍轉檔，不用自己猜（.xls / .xlsx 都適用，用的是同一套 SheetJS）。
+// 讀不到（原檔沒設定列印範圍、或格式不支援）就回傳 null，後端會自動退回用整張分頁的實際內容範圍。
+function readLayoutPrintRange(file) {
+  return new Promise((resolve) => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        const wb = XLSX.read(e.target.result, { type: "array" });
+        let idx = wb.SheetNames.findIndex((n) => n.replace(/\s/g, "").indexOf("賣場+倉庫") >= 0);
+        if (idx < 0) idx = 0;
+        const names = (wb.Workbook && wb.Workbook.Names) || [];
+        const pa = names.find((n) => n.Name === "_xlnm.Print_Area" && n.Sheet === idx);
+        resolve(pa ? pa.Ref.split("!").pop().split(",")[0].replace(/\$/g, "") : null);
+      } catch (err) { resolve(null); }
+    };
+    reader.onerror = () => resolve(null);
+    reader.readAsArrayBuffer(file);
+  });
+}
+
 // 在二維陣列中找指定文字標籤，回傳其右邊相鄰欄的數字（找不到回 null）；盤點總表用此擷取「合計盤點總數」
 function findLabeledTotal(aoa, label) {
   for (const row of aoa) {
@@ -292,7 +313,7 @@ async function bulkDownloadFiles(list, zipBaseName, toast, asLayoutPdf) {
   if (list.length === 0) { toast("本月尚無已上傳的檔案"); return; }
   if (InventoryAPI.cloud()) {
     try {
-      const z = await InventoryAPI.zipFiles(list.map((l) => ({ fileUrl: l.fileUrl, fileName: l.fileName })), zipBaseName, asLayoutPdf);
+      const z = await InventoryAPI.zipFiles(list.map((l) => ({ fileUrl: l.fileUrl, fileName: l.fileName, printRange: l.printRange })), zipBaseName, asLayoutPdf);
       if (z) { downloadBase64Zip(z.filename, z.base64); toast(`已下載本月 ${list.length} 份檔案（zip）✔`); return; }
     } catch (err) { toast("打包下載失敗，請確認網路後再試"); return; }
   }
@@ -750,8 +771,9 @@ function LayoutZone({ db, setDB, month, setMonth, toast }) {
     const reader = new FileReader();
     reader.onload = async () => {
       try {
+        const printRange = await readLayoutPrintRange(f);
         const url = await InventoryAPI.uploadLayout(reader.result, f.name, brand ? brand.name : "");
-        const rec = { storeId: store.id, month, fileName: f.name, fileUrl: url, uploadedAt: new Date().toISOString().slice(0, 10) };
+        const rec = { storeId: store.id, month, fileName: f.name, fileUrl: url, printRange: printRange || "", uploadedAt: new Date().toISOString().slice(0, 10) };
         setDB((d) => ({ ...d, layouts: [...(d.layouts || []).filter((l) => !(l.storeId === store.id && l.month === month)), rec] }));
         toast(`已上傳「${store.name}」Layout 圖 ✔`);
       } catch (err) {
@@ -768,7 +790,7 @@ function LayoutZone({ db, setDB, month, setMonth, toast }) {
   const downloadOne = async (store, l) => {
     setDlBusy(store.id);
     try {
-      const pdf = await InventoryAPI.layoutPdf(l.fileUrl, l.fileName);
+      const pdf = await InventoryAPI.layoutPdf(l.fileUrl, l.fileName, l.printRange);
       if (pdf) {
         downloadBase64File(pdf.filename, pdf.base64, "application/pdf");
         toast(`已下載「${store.name}」Layout 圖（PDF）✔`);
