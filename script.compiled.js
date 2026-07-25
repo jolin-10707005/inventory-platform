@@ -1231,7 +1231,7 @@ function LayoutZone({
   }));
   const [busy, setBusy] = useState("");
   const [dlBusy, setDlBusy] = useState("");
-  const [downloadingAll, setDownloadingAll] = useState(false);
+  const [downloadingAll, setDownloadingAll] = useState(""); // "" | "excel" | "pdf"
   const brand = db.brands.find(b => b.id === brandId);
   const layoutOf = storeId => (db.layouts || []).find(l => l.storeId === storeId && l.month === month);
   const baseStores = db.stores.filter(s => s.brandId === brandId && s.month === month && !s.isSub) // 只列主店，不含分倉
@@ -1303,14 +1303,15 @@ function LayoutZone({
     }
   };
 
-  // 本月總表下載：一店一檔，不合併；交由伺服器端把每張 Layout 轉成 PDF 再打包成 zip（本機模式依序下載原檔）
-  const downloadAll = async () => {
+  // 本月Layout圖下載：一店一檔，不合併；交由伺服器端打包成 zip（本機模式依序下載原檔）。
+  // asPdf=true 時伺服器會先把每張 Excel 轉成 PDF 再打包；asPdf=false 直接打包原始 Excel 檔。
+  const downloadAll = asPdf => async () => {
     const list = (db.layouts || []).filter(l => l.month === month && db.stores.some(s => s.id === l.storeId && s.brandId === brandId));
-    setDownloadingAll(true);
+    setDownloadingAll(asPdf ? "pdf" : "excel");
     try {
-      await bulkDownloadFiles(list, `${brand ? brand.name : ""}Layout圖_${month}`, toast, true);
+      await bulkDownloadFiles(list, `${brand ? brand.name : ""}Layout圖_${month}${asPdf ? "(PDF)" : "(Excel)"}`, toast, asPdf);
     } finally {
-      setDownloadingAll(false);
+      setDownloadingAll("");
     }
   };
   return /*#__PURE__*/React.createElement(SectionCard, {
@@ -1331,10 +1332,14 @@ function LayoutZone({
     title: "盤點月份",
     className: "px-3 py-2 border border-slate-300 rounded-lg text-sm bg-white focus:ring-2 focus:ring-blue-500 outline-none"
   }), /*#__PURE__*/React.createElement("button", {
-    onClick: downloadAll,
-    disabled: downloadingAll || !brandId,
+    onClick: downloadAll(false),
+    disabled: !!downloadingAll || !brandId,
     className: "px-3 py-2 bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-400 text-white text-sm rounded-lg"
-  }, downloadingAll ? "下載中…" : "⬇ 本月總表下載")), brandId && /*#__PURE__*/React.createElement("div", {
+  }, downloadingAll === "excel" ? "下載中…" : "⬇ 本月Layout圖下載（Excel檔）"), /*#__PURE__*/React.createElement("button", {
+    onClick: downloadAll(true),
+    disabled: !!downloadingAll || !brandId,
+    className: "px-3 py-2 bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-400 text-white text-sm rounded-lg"
+  }, downloadingAll === "pdf" ? "下載中…" : "⬇ 本月Layout圖下載（PDF檔）")), brandId && /*#__PURE__*/React.createElement("div", {
     className: "table-scroll mt-4"
   }, /*#__PURE__*/React.createElement("table", {
     className: "w-full text-sm"
