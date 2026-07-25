@@ -76,11 +76,13 @@ const seedDB = {
 };
 
 /* ---------------- 資料存取（透過 api.js 抽象層） ----------------
- * 維護類資料（單一管理者編輯）→ 整表覆蓋（ADMIN_TABS）
+ * 維護類資料（單一管理者編輯）→ 整表覆蓋（ADMIN_TABS），背景防抖批次同步
  * 盤點/上傳紀錄（多裝置同時新增）→ 逐筆 append，避免互相覆蓋
+ * Layout圖／盤點總表 → 逐筆 upsertRow，上傳當下就同步寫入等結果，不透過背景批次同步
+ *   （批次同步是多分頁平行送出、失敗會整批漏寫又不會重試，且失敗後背景刷新會用舊資料蓋掉剛上傳成功的畫面）
  */
-const ADMIN_TABS = ["brands", "stores", "staff", "prices", "aliases", "categoryAliases", "manuals", "layouts", "countTotals", "opsMargins"];
-const ALL_TABS = [...ADMIN_TABS, "records", "uploads"];
+const ADMIN_TABS = ["brands", "stores", "staff", "prices", "aliases", "categoryAliases", "manuals", "opsMargins"];
+const ALL_TABS = [...ADMIN_TABS, "layouts", "countTotals", "records", "uploads"];
 function seed() { return JSON.parse(JSON.stringify(seedDB)); }
 
 /* ---------------- 共用工具 ---------------- */
@@ -698,6 +700,7 @@ function CountUploadZone({ db, setDB, month, setMonth, toast }) {
 
         const url = await InventoryAPI.uploadCountSheet(reader.result, f.name, brand ? brand.name : "");
         const rec = { storeId: store.id, month, fileName: f.name, fileUrl: url, total, uploadedAt: new Date().toISOString().slice(0, 10) };
+        await InventoryAPI.upsertRow("countTotals", ["storeId", "month"], rec); // 上傳當下就直接確定寫入 Sheet，不靠背景批次同步
         setDB((d) => ({ ...d, countTotals: [...(d.countTotals || []).filter((c) => !(c.storeId === store.id && c.month === month)), rec] }));
         if (prevUrl && prevUrl !== url) InventoryAPI.deleteFile(prevUrl).catch(() => {});
         toast(total == null
@@ -823,6 +826,7 @@ function LayoutZone({ db, setDB, month, setMonth, toast }) {
         const printRange = await readLayoutPrintRange(f);
         const url = await InventoryAPI.uploadLayout(reader.result, f.name, brand ? brand.name : "");
         const rec = { storeId: store.id, month, fileName: f.name, fileUrl: url, printRange: printRange || "", uploadedAt: new Date().toISOString().slice(0, 10) };
+        await InventoryAPI.upsertRow("layouts", ["storeId", "month"], rec); // 上傳當下就直接確定寫入 Sheet，不靠背景批次同步
         setDB((d) => ({ ...d, layouts: [...(d.layouts || []).filter((l) => !(l.storeId === store.id && l.month === month)), rec] }));
         if (prevUrl && prevUrl !== url) InventoryAPI.deleteFile(prevUrl).catch(() => {});
         toast(`已上傳「${store.name}」Layout 圖 ✔`);

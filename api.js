@@ -126,6 +126,16 @@ const InventoryAPI = {
     await this._post({ action: "append", tab, row });
   },
 
+  /** 依 keyFields 直接覆蓋/新增單筆並立刻寫回（不經過整批防抖同步）。
+   *  用於 Layout圖／盤點總表這類「上傳當下就要確定成功寫入」的紀錄，避免依賴背景批次同步的時機、
+   *  也避免批次同步悄悄失敗後，下次自動刷新用舊資料把畫面剛顯示的「已上傳」蓋掉。
+   *  本機模式不需要（setDB 本身就會同步寫入 localStorage），直接略過。 */
+  async upsertRow(tab, keyFields, row) {
+    if (!this.cloud()) return;
+    const j = await this._post({ action: "upsertRow", tab, keyFields, row });
+    if (j.error) throw new Error(j.error);
+  },
+
   /** 上傳照片。本機模式直接回傳 base64；雲端模式存進 Drive 並回傳檔案連結 */
   async uploadPhoto(dataUrl, filename) {
     if (!this.cloud()) return dataUrl;

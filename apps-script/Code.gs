@@ -49,6 +49,8 @@ function doPost(e) {
       case "append":
         appendRow(body.tab, body.row);
         return jsonOut({ ok: true });
+      case "upsertRow":
+        return jsonOut(upsertRow(body.tab, body.keyFields, body.row));
       case "uploadPhoto":
         return jsonOut({ ok: true, url: uploadPhoto(body.dataUrl, body.filename) });
       case "uploadManual":
@@ -134,6 +136,40 @@ function appendRow(tab, row) {
   var range = sh.getRange(rowIndex, 1, 1, headers.length);
   range.setNumberFormat("@"); // 同上，避免日期/時間欄位被自動轉型
   range.setValues([toLine(row, headers)]);
+}
+
+// 依 keyFields 找出已存在的那一列就覆蓋、找不到就新增，直接寫回單一分頁（不經過整批 replaceTab）。
+// 供 Layout圖／盤點總表這類「上傳當下就要立刻確定成功寫入」的場景使用：這兩種資料改用這個直接 upsert，
+// 不再跟其他維護類資料一起走防抖批次同步——批次同步是多個分頁平行送出，其中一個失敗會讓整批都沒寫入，
+// 且失敗後又悄悄放行下一次自動刷新，刷新抓到的舊資料會把前端剛顯示的「已上傳」蓋回「尚未上傳」。
+function upsertRow(tab, keyFields, row) {
+  var sh = sheet(tab);
+  var values = sh.getDataRange().getValues();
+  var headers = (values.length && values[0].join("") !== "") ? values[0] : null;
+  if (!headers) {
+    headers = Object.keys(row);
+    var hr = sh.getRange(1, 1, 1, headers.length);
+    hr.setNumberFormat("@"); hr.setValues([headers]);
+    values = [headers];
+  }
+  var matchIdx = -1;
+  for (var i = 1; i < values.length; i++) {
+    var isMatch = keyFields.every(function (k) {
+      var colIdx = headers.indexOf(k);
+      return colIdx >= 0 && String(values[i][colIdx]) === String(row[k]);
+    });
+    if (isMatch) { matchIdx = i; break; }
+  }
+  var line = toLine(row, headers);
+  if (matchIdx >= 0) {
+    var rg = sh.getRange(matchIdx + 1, 1, 1, headers.length);
+    rg.setNumberFormat("@"); rg.setValues([line]);
+  } else {
+    var rowIndex = sh.getLastRow() + 1;
+    var rg2 = sh.getRange(rowIndex, 1, 1, headers.length);
+    rg2.setNumberFormat("@"); rg2.setValues([line]);
+  }
+  return { ok: true };
 }
 
 var MAX_PHOTO_BYTES = 10 * 1024 * 1024;  // 單張照片上限 10MB
