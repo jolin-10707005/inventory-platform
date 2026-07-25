@@ -164,6 +164,10 @@ function uploadToDrive(folder, dataUrl, filename, isAllowedType, maxBytes, rejec
   if (!isAllowedType(contentType)) throw new Error(rejectMsg);
   var bytes = Utilities.base64Decode(parts[1]);
   if (bytes.length > maxBytes) throw new Error("檔案過大，上限 " + Math.round(maxBytes / 1024 / 1024) + "MB");
+  // 同資料夾若已有一模一樣檔名的檔案，先清掉舊的——網路逾時導致瀏覽器誤判失敗而重傳時，
+  // 伺服器端其實已經成功建立過一次，這裡不管前端記不記得，都能避免同名檔案一直累積
+  var dup = folder.getFilesByName(filename || "file");
+  while (dup.hasNext()) { try { dup.next().setTrashed(true); } catch (e) {} }
   var blob = Utilities.newBlob(bytes, contentType, filename || "file");
   var file = folder.createFile(blob);
   file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
