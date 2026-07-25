@@ -1041,7 +1041,14 @@ function CountUploadZone({
 
   // 本月總表下載：一店一檔，不合併，交由伺服器端打包成 zip（或本機模式依序下載）
   const downloadAllCounts = async () => {
-    const list = (db.countTotals || []).filter(c => c.month === month && db.stores.some(s => s.id === c.storeId && s.brandId === brandId));
+    // 打包用的檔名要加店號前綴，確保唯一——不同店的原始上傳檔名剛好相同時，Utilities.zip 會因為重複檔名整包失敗
+    const list = (db.countTotals || []).filter(c => c.month === month && db.stores.some(s => s.id === c.storeId && s.brandId === brandId)).map(c => {
+      const s = db.stores.find(st => st.id === c.storeId);
+      return {
+        ...c,
+        fileName: s ? `${s.code || s.name}_${c.fileName}` : c.fileName
+      };
+    });
     setDownloadingAll(true);
     try {
       await bulkDownloadFiles(list, `${brand ? brand.name : ""}盤點總表_${month}`, toast);
@@ -1348,7 +1355,14 @@ function LayoutZone({
   // 本月Layout圖下載：一店一檔，不合併；交由伺服器端打包成 zip（本機模式依序下載原檔）。
   // asPdf=true 時伺服器會先把每張 Excel 轉成 PDF 再打包；asPdf=false 直接打包原始 Excel 檔。
   const downloadAll = asPdf => async () => {
-    const list = (db.layouts || []).filter(l => l.month === month && db.stores.some(s => s.id === l.storeId && s.brandId === brandId));
+    // 打包用的檔名要加店號前綴，確保唯一——不同店的原始上傳檔名剛好相同時，Utilities.zip 會因為重複檔名整包失敗
+    const list = (db.layouts || []).filter(l => l.month === month && db.stores.some(s => s.id === l.storeId && s.brandId === brandId)).map(l => {
+      const s = db.stores.find(st => st.id === l.storeId);
+      return {
+        ...l,
+        fileName: s ? `${s.code || s.name}_${l.fileName}` : l.fileName
+      };
+    });
     setDownloadingAll(asPdf ? "pdf" : "excel");
     try {
       await bulkDownloadFiles(list, `${brand ? brand.name : ""}Layout圖_${month}${asPdf ? "(PDF)" : "(Excel)"}`, toast, asPdf);
