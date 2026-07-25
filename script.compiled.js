@@ -912,6 +912,58 @@ function DownloadZone({
  * ============================================================ */
 // 盤點總表摘要值固定標籤（檔案最後幾列的固定格式，位置隨資料筆數變動，逐列掃描比對）
 const COUNT_TOTAL_LABEL = "合計盤點總數";
+
+// 儀表板：應傳／已傳／未傳店數 + 匯出未傳名單（盤點總表上傳、盤點作業情況紀錄共用）
+function StatusDashboard({
+  total,
+  done,
+  onExport
+}) {
+  const notDone = Math.max(0, total - done);
+  const Card = ({
+    label,
+    value,
+    cls
+  }) => /*#__PURE__*/React.createElement("div", {
+    className: "rounded-xl border px-5 py-3 min-w-[108px] " + cls
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "text-xs opacity-70"
+  }, label), /*#__PURE__*/React.createElement("div", {
+    className: "text-2xl font-bold mt-0.5"
+  }, value, /*#__PURE__*/React.createElement("span", {
+    className: "text-sm font-normal opacity-60 ml-1"
+  }, "家")));
+  return /*#__PURE__*/React.createElement("div", {
+    className: "mb-4 flex flex-wrap gap-3 items-center"
+  }, /*#__PURE__*/React.createElement(Card, {
+    label: "應傳店數",
+    value: total,
+    cls: "bg-slate-50 border-slate-200 text-slate-700"
+  }), /*#__PURE__*/React.createElement(Card, {
+    label: "已傳店數",
+    value: done,
+    cls: "bg-emerald-50 border-emerald-200 text-emerald-700"
+  }), /*#__PURE__*/React.createElement(Card, {
+    label: "未傳店數",
+    value: notDone,
+    cls: "bg-amber-50 border-amber-200 text-amber-700"
+  }), /*#__PURE__*/React.createElement("button", {
+    onClick: onExport,
+    disabled: notDone === 0,
+    className: "px-4 py-2 bg-rose-600 hover:bg-rose-700 disabled:bg-slate-300 text-white text-sm rounded-lg"
+  }, "⬇ 匯出未傳名單"));
+}
+
+// 產出「未傳店鋪名單」Excel（儀表板共用）：notDoneStores 為尚未完成的店鋪陣列
+function exportNotDoneList(notDoneStores, filename, toast, doneLabel) {
+  if (notDoneStores.length === 0) {
+    toast("全部店鋪都" + (doneLabel || "已完成") + " 🎉");
+    return;
+  }
+  const rows = sortStoresByDateCode(notDoneStores).map(s => [s.auditDate || "", s.code || "", s.name || "", s.dept || "", s.category || ""]);
+  exportXLSX(filename, "未傳名單", [["盤點日期", "店鋪代碼", "店鋪名稱", "主責課", "店鋪種類"], ...rows]);
+  toast(`已匯出未傳名單（${notDoneStores.length} 家）`);
+}
 function CountUploadZone({
   db,
   setDB,
@@ -934,6 +986,11 @@ function CountUploadZone({
     countStatus: countOf(s.id) ? "已上傳" : "尚未上傳"
   }));
   const stores = sortStoresByDateCode(baseStores.filter(s => matchFilters(s, filters)));
+
+  // 儀表板統計（以本品牌本月全部店鋪為母體，不受表格上方篩選影響）
+  const totalStores = baseStores.length;
+  const uploadedCount = baseStores.filter(s => countOf(s.id)).length;
+  const exportNotUploaded = () => exportNotDoneList(baseStores.filter(s => !countOf(s.id)), `${brand ? brand.name : ""}盤點總表未傳名單_${month}.xlsx`, toast, "已上傳");
 
   // 本月總表下載：一店一檔，不合併，交由伺服器端打包成 zip（或本機模式依序下載）
   const downloadAllCounts = async () => {
@@ -1006,6 +1063,12 @@ function CountUploadZone({
     disabled: downloadingAll || !brandId,
     className: "px-3 py-2 bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-400 text-white text-sm rounded-lg"
   }, downloadingAll ? "下載中…" : "⬇ 本月總表下載")), brandId && /*#__PURE__*/React.createElement("div", {
+    className: "mt-4"
+  }, /*#__PURE__*/React.createElement(StatusDashboard, {
+    total: totalStores,
+    done: uploadedCount,
+    onExport: exportNotUploaded
+  })), brandId && /*#__PURE__*/React.createElement("div", {
     className: "table-scroll mt-4"
   }, /*#__PURE__*/React.createElement("table", {
     className: "w-full text-sm"
@@ -1454,6 +1517,12 @@ function FillZone({
     };
   });
   const myRecords = allRecords.filter(r => matchFilters(r, filters));
+
+  // 儀表板統計：以表單目前選的品牌為範圍，本品牌本月全部店鋪為母體；「已填」＝該店本月已有任一筆盤點紀錄
+  const dashBrand = db.brands.find(b => b.id === form.brandId);
+  const dashStores = db.stores.filter(s => s.brandId === form.brandId && s.month === month);
+  const filledCount = dashStores.filter(s => db.records.some(r => r.storeId === s.id && r.month === month)).length;
+  const exportNotFilled = () => exportNotDoneList(dashStores.filter(s => !db.records.some(r => r.storeId === s.id && r.month === month)), `${dashBrand ? dashBrand.name : ""}盤點紀錄未填名單_${month}.xlsx`, toast, "已填寫");
   const Err = ({
     k
   }) => errors[k] ? /*#__PURE__*/React.createElement("p", {
@@ -1462,7 +1531,11 @@ function FillZone({
   const inputCls = "w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 outline-none";
   return /*#__PURE__*/React.createElement("div", {
     className: "space-y-6"
-  }, /*#__PURE__*/React.createElement(SectionCard, {
+  }, form.brandId && /*#__PURE__*/React.createElement(StatusDashboard, {
+    total: dashStores.length,
+    done: filledCount,
+    onExport: exportNotFilled
+  }), /*#__PURE__*/React.createElement(SectionCard, {
     title: "📝 盤點作業情況紀錄",
     subtitle: "記錄盤點作業時間、件數人數、特殊狀況及紙本報表照片"
   }, /*#__PURE__*/React.createElement("div", {
