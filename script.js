@@ -280,6 +280,13 @@ function readLayoutPrintRange(file) {
   });
 }
 
+// 一店一檔的上傳（Layout 圖、盤點總表）都要檢查檔名是否包含當店店名，避免手滑上傳到別家店的檔案。
+// 檔名沒有包含店名時跳確認視窗，使用者選「確定」才繼續上傳（不是硬性擋下，只是提醒）。
+function confirmFileNameHasStore(fileName, storeName) {
+  if (!storeName || String(fileName).indexOf(storeName) >= 0) return true;
+  return window.confirm(`檔名「${fileName}」看起來沒有包含店名「${storeName}」，確定要上傳嗎？`);
+}
+
 // 在二維陣列中找指定文字標籤，回傳其右邊相鄰欄的數字（找不到回 null）；盤點總表用此擷取「合計盤點總數」
 function findLabeledTotal(aoa, label) {
   for (const row of aoa) {
@@ -561,6 +568,7 @@ function DownloadZone({ db, month, setMonth, toast }) {
  * ============================================================ */
 // 盤點總表摘要值固定標籤（檔案最後幾列的固定格式，位置隨資料筆數變動，逐列掃描比對）
 const COUNT_TOTAL_LABEL = "合計盤點總數";
+const STOCK_TOTAL_LABEL = "合計庫存數量"; // 表內這個數字必須等於平台上該店庫存檔的庫存數量總和，否則代表用錯資料，擋下上傳
 
 // 儀表板：應傳／已傳／未傳店數（進度條）＋ 匯出未傳名單（盤點總表上傳、盤點作業情況紀錄共用）
 function StatusDashboard({ total, done, onExport }) {
@@ -644,12 +652,28 @@ function CountUploadZone({ db, setDB, month, setMonth, toast }) {
     const f = e.target.files[0];
     if (!f) return;
     if (!/\.(xlsx|xls)$/i.test(f.name)) { toast("僅接受 Excel 檔（.xlsx / .xls）"); e.target.value = ""; return; }
+    if (!confirmFileNameHasStore(f.name, store.name)) { e.target.value = ""; return; }
     setBusy(store.id);
     const reader = new FileReader();
     reader.onload = async () => {
       try {
         const aoa = await readXLSXMatrix(f);
         const total = findLabeledTotal(aoa, COUNT_TOTAL_LABEL);
+
+        // 表內「合計庫存數量」必須等於平台上該店庫存檔的庫存數量總和，兩者對不上代表盤點總表用錯了資料
+        // （例如貼到別家店的底稿、或庫存檔後來又重新上傳過），擋下上傳避免後續差異金額算錯
+        const stockTotalInSheet = findLabeledTotal(aoa, STOCK_TOTAL_LABEL);
+        if (stockTotalInSheet != null) {
+          const stockMaster = await InventoryAPI.getMaster(store.id, month, "stock");
+          if (stockMaster && stockMaster.rows && stockMaster.rows.length > 0) {
+            const systemStockTotal = stockMaster.rows.reduce((a, r) => a + num(r[QTY_COL]), 0);
+            if (systemStockTotal !== stockTotalInSheet) {
+              toast(`上傳失敗：表內「${STOCK_TOTAL_LABEL}」(${stockTotalInSheet}) 與系統庫存檔 (${systemStockTotal}) 不一致，請確認「${store.name}」的盤點總表是否用錯資料`);
+              return;
+            }
+          }
+        }
+
         const url = await InventoryAPI.uploadCountSheet(reader.result, f.name, brand ? brand.name : "");
         const rec = { storeId: store.id, month, fileName: f.name, fileUrl: url, total, uploadedAt: new Date().toISOString().slice(0, 10) };
         setDB((d) => ({ ...d, countTotals: [...(d.countTotals || []).filter((c) => !(c.storeId === store.id && c.month === month)), rec] }));
@@ -767,6 +791,7 @@ function LayoutZone({ db, setDB, month, setMonth, toast }) {
     const f = e.target.files[0];
     if (!f) return;
     if (!/\.(xlsx|xls)$/i.test(f.name)) { toast("僅接受 Excel 檔（.xlsx / .xls）"); e.target.value = ""; return; }
+    if (!confirmFileNameHasStore(f.name, store.name)) { e.target.value = ""; return; }
     setBusy(store.id);
     const reader = new FileReader();
     reader.onload = async () => {
@@ -784,6 +809,13 @@ function LayoutZone({ db, setDB, month, setMonth, toast }) {
       }
     };
     reader.readAsDataURL(f);
+  };
+
+  // 單店下載 Excel 原檔（不轉檔，直接下載上傳時存的原始檔）
+  const downloadOneExcel = (l) => {
+    const a = document.createElement("a");
+    a.href = l.fileUrl; a.download = l.fileName; a.target = "_blank"; a.rel = "noreferrer";
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
   };
 
   // 單店下載：上傳的是 Excel，下載時交由後端把「賣場+倉庫 LAYOUT」那張分頁轉成 PDF 後回傳
@@ -867,6 +899,9 @@ function LayoutZone({ db, setDB, month, setMonth, toast }) {
                           {busy === s.id ? "上傳中…" : "⬆ 上傳"}
                           <input type="file" accept=".xlsx,.xls" className="hidden" disabled={busy === s.id} onChange={onUpload(s)} />
                         </label>
+                        {l && <button onClick={() => downloadOneExcel(l)}
+                          className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white text-sm rounded-lg">
+                          ⬇ 下載Excel</button>}
                         {l && <button onClick={() => downloadOne(s, l)} disabled={dlBusy === s.id}
                           className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 disabled:bg-slate-400 text-white text-sm rounded-lg">
                           {dlBusy === s.id ? "轉檔中…" : "⬇ 下載PDF"}</button>}

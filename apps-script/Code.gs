@@ -652,3 +652,19 @@ function diagnoseLayout() {
     Logger.log("⑥ 轉檔失敗：" + (err && err.stack ? err.stack : err));
   }
 }
+
+/* ============================================================
+ * 一次性清理：刪除測試上傳誤存進 Drive 的兩個檔案（2026-07-25，開發測試時不慎上傳到正式環境）
+ * 用法：在 Apps Script 編輯器上方函式清單選「cleanupTestUploads」→ 按 ▶ 執行一次即可，之後可刪除本函式
+ * ============================================================ */
+function cleanupTestUploads() {
+  var ids = ["1hbvMhPI6EuSOAPA1pMR4eYs9ElnDPvGe", "15kjHtAy54_2Uzmm8wpu6qeZ76FfEXD9d"];
+  ids.forEach(function (id) {
+    try {
+      DriveApp.getFileById(id).setTrashed(true);
+      Logger.log("已刪除：" + id);
+    } catch (e) {
+      Logger.log("刪除失敗（可能已不存在）：" + id + " - " + e);
+    }
+  });
+}
