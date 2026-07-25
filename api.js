@@ -163,6 +163,13 @@ const InventoryAPI = {
     return { filename: j.filename, base64: j.base64 };
   },
 
+  /** 刪除單一 Drive 檔案（重新上傳同店同月份的 Layout圖／盤點總表後，清掉被取代的舊檔，避免孤兒檔案累積）。
+   *  本機模式無 Drive，直接略過；找不到/已刪除的檔案後端視為成功，不會拋錯 */
+  async deleteFile(fileUrl) {
+    if (!this.cloud() || !fileUrl) return;
+    await this._post({ action: "deleteFile", fileUrl });
+  },
+
   /** 批次打包下載（伺服器端 zip，避免瀏覽器端抓既有 Drive 檔案的 CORS 限制）
    *  files = [{fileUrl, fileName}]；asLayoutPdf=true 時每份先轉成 PDF 再打包（Layout 圖用）。
    *  回傳 { filename, base64 }。本機模式無 Drive，回傳 null 讓呼叫端改用逐個下載 */

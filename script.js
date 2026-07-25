@@ -659,6 +659,7 @@ function CountUploadZone({ db, setDB, month, setMonth, toast }) {
     if (!f) return;
     if (!/\.(xlsx|xls)$/i.test(f.name)) { toast("僅接受 Excel 檔（.xlsx / .xls）"); e.target.value = ""; return; }
     if (!confirmFileNameHasStore(f.name, store.name)) { e.target.value = ""; return; }
+    const prevUrl = (countOf(store.id) || {}).fileUrl; // 重新上傳前先記住舊檔連結，成功後清掉，避免 Drive 留孤兒檔
     setBusy(store.id);
     const reader = new FileReader();
     reader.onload = async () => {
@@ -683,6 +684,7 @@ function CountUploadZone({ db, setDB, month, setMonth, toast }) {
         const url = await InventoryAPI.uploadCountSheet(reader.result, f.name, brand ? brand.name : "");
         const rec = { storeId: store.id, month, fileName: f.name, fileUrl: url, total, uploadedAt: new Date().toISOString().slice(0, 10) };
         setDB((d) => ({ ...d, countTotals: [...(d.countTotals || []).filter((c) => !(c.storeId === store.id && c.month === month)), rec] }));
+        if (prevUrl && prevUrl !== url) InventoryAPI.deleteFile(prevUrl).catch(() => {});
         toast(total == null
           ? `已上傳「${store.name}」盤點總表，但找不到「${COUNT_TOTAL_LABEL}」，請確認檔案格式`
           : `已上傳「${store.name}」盤點總表（合計盤點總數 ${total}）✔`);
@@ -798,6 +800,7 @@ function LayoutZone({ db, setDB, month, setMonth, toast }) {
     if (!f) return;
     if (!/\.(xlsx|xls)$/i.test(f.name)) { toast("僅接受 Excel 檔（.xlsx / .xls）"); e.target.value = ""; return; }
     if (!confirmFileNameHasStore(f.name, store.name)) { e.target.value = ""; return; }
+    const prevUrl = (layoutOf(store.id) || {}).fileUrl; // 重新上傳前先記住舊檔連結，成功後清掉，避免 Drive 留孤兒檔
     setBusy(store.id);
     const reader = new FileReader();
     reader.onload = async () => {
@@ -806,6 +809,7 @@ function LayoutZone({ db, setDB, month, setMonth, toast }) {
         const url = await InventoryAPI.uploadLayout(reader.result, f.name, brand ? brand.name : "");
         const rec = { storeId: store.id, month, fileName: f.name, fileUrl: url, printRange: printRange || "", uploadedAt: new Date().toISOString().slice(0, 10) };
         setDB((d) => ({ ...d, layouts: [...(d.layouts || []).filter((l) => !(l.storeId === store.id && l.month === month)), rec] }));
+        if (prevUrl && prevUrl !== url) InventoryAPI.deleteFile(prevUrl).catch(() => {});
         toast(`已上傳「${store.name}」Layout 圖 ✔`);
       } catch (err) {
         toast("上傳失敗，請確認網路或檔案格式");

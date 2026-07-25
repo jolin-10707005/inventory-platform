@@ -57,6 +57,8 @@ function doPost(e) {
         return jsonOut({ ok: true, url: uploadLayout(body.dataUrl, body.filename, body.brandName) });
       case "uploadCountSheet":
         return jsonOut({ ok: true, url: uploadCountSheet(body.dataUrl, body.filename, body.brandName) });
+      case "deleteFile":
+        return jsonOut(deleteDriveFile(body.fileUrl));
       case "zipFiles":
         return jsonOut(zipFiles(body.files, body.zipName, body.asLayoutPdf));
       case "layoutPdf":
@@ -199,6 +201,15 @@ function isExcelType(ct) {
 function extractDriveId(url) {
   var m = String(url || "").match(/[?&]id=([^&]+)/);
   return m ? m[1] : null;
+}
+
+// 刪除單一 Drive 檔案（重新上傳同店同月份的 Layout圖／盤點總表後，前端會呼叫這個清掉被取代的舊檔）。
+// 找不到 ID 或檔案已不存在都視為成功，不拋錯——避免「已經刪過」或「URL 格式怪」這種小事讓上傳流程卡住。
+function deleteDriveFile(fileUrl) {
+  var id = extractDriveId(fileUrl);
+  if (!id) return { ok: true };
+  try { DriveApp.getFileById(id).setTrashed(true); } catch (e) { /* 已不存在就當作成功 */ }
+  return { ok: true };
 }
 
 // 批次打包下載：files = [{fileUrl, fileName}]；伺服器端直接讀 Drive 檔案打包，避免瀏覽器端 CORS 限制
@@ -667,4 +678,42 @@ function cleanupTestUploads() {
       Logger.log("刪除失敗（可能已不存在）：" + id + " - " + e);
     }
   });
+}
+
+/* ============================================================
+ * 一次性清理：刪除「Layout圖」「盤點總表」資料夾裡目前索引已經不指向的孤兒檔案
+ * （重新上傳同店同月份的檔案時，若舊版本沒清成功、或網路異常導致重複上傳，舊檔會留在 Drive 裡沒被刪掉）
+ * 用法：在 Apps Script 編輯器上方函式清單選「cleanupOrphanFiles」→ 按 ▶ 執行，看執行記錄清掉幾個檔案
+ * 判斷方式：以「Layout圖」「盤點總表」兩個分頁目前實際記錄的 fileUrl 為準，資料夾裡任何不在這個名單內的
+ * 檔案都視為孤兒（被取代但沒清掉的舊版本），會被移到垃圾桶（不是永久刪除，誤刪可從垃圾桶復原）。
+ * ============================================================ */
+function cleanupOrphanFiles() {
+  var referenced = {};
+  ["layouts", "countTotals"].forEach(function (tab) {
+    readTab(tab).forEach(function (r) {
+      var id = extractDriveId(r.fileUrl);
+      if (id) referenced[id] = true;
+    });
+  });
+
+  var removed = [];
+  var brandFolders = DriveApp.getFolderById(PHOTO_FOLDER_ID).getFolders();
+  while (brandFolders.hasNext()) {
+    var bf = brandFolders.next();
+    ["Layout圖", "盤點總表"].forEach(function (subName) {
+      var subIt = bf.getFoldersByName(subName);
+      if (!subIt.hasNext()) return;
+      var sub = subIt.next();
+      var files = sub.getFiles();
+      while (files.hasNext()) {
+        var f = files.next();
+        if (!referenced[f.getId()]) {
+          removed.push(bf.getName() + "/" + subName + "/" + f.getName());
+          f.setTrashed(true);
+        }
+      }
+    });
+  }
+  Logger.log("已刪除 " + removed.length + " 個孤兒檔案：\n" + removed.join("\n"));
+  return removed;
 }
