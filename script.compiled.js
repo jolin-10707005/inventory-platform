@@ -524,7 +524,15 @@ function readLayoutPrintRange(file) {
 // 一店一檔的上傳（Layout 圖、盤點總表）都要檢查檔名是否包含當店店名，避免手滑上傳到別家店的檔案。
 // 檔名沒有包含店名時跳確認視窗，使用者選「確定」才繼續上傳（不是硬性擋下，只是提醒）。
 function confirmFileNameHasStore(fileName, storeName) {
-  if (!storeName || String(fileName).indexOf(storeName) >= 0) return true;
+  if (!storeName) return true;
+  const name = String(fileName);
+  if (name.indexOf(storeName) >= 0) return true;
+  // 放寬比對：店名常是兩個詞組成（如「新光」+「天母」），但客戶檔命名順序可能相反（「天母新光」）。
+  // 把店名切成每 2 字一組，只要每組都在檔名中出現（不論順序）就視為相符；1 字的殘餘片段太短、跳過不檢查。
+  const chunks = [];
+  const clean = storeName.replace(/\s+/g, "");
+  for (let i = 0; i < clean.length; i += 2) chunks.push(clean.slice(i, i + 2));
+  if (chunks.length > 0 && chunks.every(c => c.length < 2 || name.indexOf(c) >= 0)) return true;
   return window.confirm(`檔名「${fileName}」看起來沒有包含店名「${storeName}」，確定要上傳嗎？`);
 }
 
