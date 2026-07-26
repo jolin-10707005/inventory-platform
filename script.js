@@ -1127,16 +1127,24 @@ function FillZone({ db, setDB, month, setMonth, toast }) {
     const files = Array.from(e.target.files).slice(0, 6);
     Promise.all(files.map((f) => new Promise((res) => {
       const r = new FileReader();
-      r.onload = () => res({ name: f.name, dataUrl: r.result });
+      r.onload = () => res({ name: f.name, dataUrl: r.result, isNew: true });
       r.readAsDataURL(f);
     }))).then((photos) => set("photos", [...form.photos, ...photos].slice(0, 6)));
   };
+
+  // 編輯中的紀錄 id；null＝目前是新增模式
+  const [editingId, setEditingId] = useState(null);
 
   // 資料驗證規則：必填欄位檢查
   const validate = () => {
     const err = {};
     if (!form.brandId) err.brandId = "請選擇品牌";
     if (!form.storeId) err.storeId = "請選擇店鋪";
+    else {
+      // 同月份同店鋪只能有一筆盤點作業紀錄；編輯模式排除自己那筆
+      const dup = db.records.find((r) => r.storeId === form.storeId && r.month === month && r.id !== editingId);
+      if (dup) err.storeId = "本月已填寫過這家店的紀錄，如需修改請至下方紀錄按「編輯」";
+    }
     if (!form.dept) err.dept = "請填寫主責課";
     if (!form.filledBy) err.filledBy = "請選擇填寫人";
     if (!form.date) err.date = "請選擇盤點日期";
@@ -1156,31 +1164,64 @@ function FillZone({ db, setDB, month, setMonth, toast }) {
   const submit = async () => {
     if (!validate()) { toast("尚有欄位未通過驗證，請檢查紅字提示"); return; }
     setSaving(true);
-    toast("儲存中…");
+    toast(editingId ? "更新中…" : "儲存中…");
     try {
       const brandName = (db.brands.find((b) => b.id === form.brandId) || {}).name || "";
       const photos = [];
       for (const p of form.photos) {
+        if (!p.isNew && p.url) { photos.push({ name: p.name, url: p.url }); continue; } // 編輯時保留既有照片，不重新上傳
         const url = await InventoryAPI.uploadPhoto(p.dataUrl, p.name, brandName);
         photos.push(InventoryAPI.cloud() ? { name: p.name, url } : { name: p.name, url: p.dataUrl });
       }
       const rec = {
-        id: uid("R"), brandId: form.brandId, storeId: form.storeId, month,
+        id: editingId || uid("R"), brandId: form.brandId, storeId: form.storeId, month,
         date: form.date, headcount: Number(form.headcount), pieces: derivedPieces,
         dept: form.dept,
         arriveTime: form.arriveTime, countStart: form.countStart, countEnd: form.countEnd,
         diffStart: form.diffStart, diffEnd: form.diffEnd, leaveTime: form.leaveTime,
         special: form.special, photos, filledBy: form.filledBy,
       };
-      const next = { ...db, records: [...db.records, rec] };
-      setDB(next);
-      await InventoryAPI.appendRow(next, "records", rec);
-      setForm(empty); setErrors({});
-      toast("盤點作業紀錄已儲存 ✔");
+      if (editingId) {
+        const next = { ...db, records: db.records.map((r) => (r.id === editingId ? rec : r)) };
+        setDB(next);
+        await InventoryAPI.upsertRow("records", ["id"], rec);
+      } else {
+        const next = { ...db, records: [...db.records, rec] };
+        setDB(next);
+        await InventoryAPI.appendRow(next, "records", rec);
+      }
+      setForm(empty); setErrors({}); setEditingId(null);
+      toast(editingId ? "盤點作業紀錄已更新 ✔" : "盤點作業紀錄已儲存 ✔");
     } catch (e) {
       toast("儲存失敗，請確認網路或稍後再試");
     } finally {
       setSaving(false);
+    }
+  };
+
+  // 點「編輯」：把該筆紀錄帶回表單（既有照片保留 url，不會重新上傳）
+  const onEditRecord = (r) => {
+    setEditingId(r.id);
+    setForm({
+      brandId: r.brandId, storeId: r.storeId, date: r.date, headcount: String(r.headcount),
+      dept: r.dept || "", filledBy: r.filledBy || "",
+      arriveTime: r.arriveTime || "", countStart: r.countStart || "", countEnd: r.countEnd || "",
+      diffStart: r.diffStart || "", diffEnd: r.diffEnd || "", leaveTime: r.leaveTime || "",
+      special: r.special || "", photos: (r.photos || []).map((p) => ({ name: p.name, url: p.url, dataUrl: p.url })),
+    });
+    setErrors({});
+  };
+  const cancelEdit = () => { setEditingId(null); setForm(empty); setErrors({}); };
+
+  const onDeleteRecord = async (r) => {
+    if (!window.confirm(`確定要刪除「${r.storeName}」${r.date} 這筆盤點作業紀錄嗎？`)) return;
+    try {
+      await InventoryAPI.deleteRow("records", ["id"], { id: r.id });
+      setDB((d) => ({ ...d, records: d.records.filter((x) => x.id !== r.id) }));
+      if (editingId === r.id) cancelEdit();
+      toast("已刪除該筆紀錄");
+    } catch (err) {
+      toast("刪除失敗，請確認網路");
     }
   };
 
@@ -1333,10 +1374,18 @@ function FillZone({ db, setDB, month, setMonth, toast }) {
             )}
           </div>
 
-          <button onClick={submit} disabled={saving}
-            className="px-6 py-2.5 bg-blue-600 hover:bg-blue-700 disabled:bg-slate-400 text-white font-medium rounded-lg">
-            {saving ? "儲存中…" : "儲存盤點紀錄"}
-          </button>
+          <div className="flex items-center gap-3">
+            <button onClick={submit} disabled={saving}
+              className="px-6 py-2.5 bg-blue-600 hover:bg-blue-700 disabled:bg-slate-400 text-white font-medium rounded-lg">
+              {saving ? (editingId ? "更新中…" : "儲存中…") : (editingId ? "更新盤點紀錄" : "儲存盤點紀錄")}
+            </button>
+            {editingId && (
+              <button onClick={cancelEdit} disabled={saving}
+                className="px-6 py-2.5 border border-slate-300 text-slate-600 hover:bg-slate-50 font-medium rounded-lg">
+                取消編輯
+              </button>
+            )}
+          </div>
         </div>
       </SectionCard>
 
@@ -1355,7 +1404,7 @@ function FillZone({ db, setDB, month, setMonth, toast }) {
                 <th className="py-2 pr-4">盤點人數</th><th className="py-2 pr-4">實盤件數</th>
                 <th className="py-2 pr-4">進店</th><th className="py-2 pr-4">存貨開始</th><th className="py-2 pr-4">存貨結束</th>
                 <th className="py-2 pr-4">找差異開始</th><th className="py-2 pr-4">找差異結束</th><th className="py-2 pr-4">離店</th>
-                <th className="py-2 pr-4">特殊狀況</th><th className="py-2 pr-4">填寫人</th><th className="py-2 pr-4">紙本照片</th>
+                <th className="py-2 pr-4">特殊狀況</th><th className="py-2 pr-4">填寫人</th><th className="py-2 pr-4">紙本照片</th><th className="py-2 pr-4">操作</th>
               </tr>
               <tr className="border-b">
                 <th className="py-1 pr-4"><FilterSelect value={filters.date} onChange={(v) => setFilt("date", v)} options={distinctVals(allRecords, "date")} /></th>
@@ -1367,7 +1416,7 @@ function FillZone({ db, setDB, month, setMonth, toast }) {
                 <th colSpan="6"></th>
                 <th className="py-1 pr-4"><FilterSelect value={filters.special} onChange={(v) => setFilt("special", v)} options={distinctVals(allRecords, "special")} /></th>
                 <th className="py-1 pr-4"><FilterSelect value={filters.filledBy} onChange={(v) => setFilt("filledBy", v)} options={distinctVals(allRecords, "filledBy")} /></th>
-                <th></th>
+                <th></th><th></th>
               </tr>
             </thead>
             <tbody>
@@ -1392,9 +1441,15 @@ function FillZone({ db, setDB, month, setMonth, toast }) {
                       ? <button onClick={() => setViewRecord(r)} className="text-blue-600 hover:underline">查看（{r.photos.length}）</button>
                       : "—"}
                   </td>
+                  <td className="py-2 pr-4">
+                    <div className="flex gap-2">
+                      <button onClick={() => onEditRecord(r)} className="text-blue-600 hover:underline">編輯</button>
+                      <button onClick={() => onDeleteRecord(r)} className="text-red-500 hover:underline">刪除</button>
+                    </div>
+                  </td>
                 </tr>
               ))}
-              {myRecords.length === 0 && <tr><td colSpan="15" className="py-6 text-center text-slate-400">查無符合條件的紀錄</td></tr>}
+              {myRecords.length === 0 && <tr><td colSpan="16" className="py-6 text-center text-slate-400">查無符合條件的紀錄</td></tr>}
             </tbody>
           </table>
         </div>

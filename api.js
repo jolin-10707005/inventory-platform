@@ -136,6 +136,13 @@ const InventoryAPI = {
     if (j.error) throw new Error(j.error);
   },
 
+  /** 依 keyFields 找到符合的那一列並整列刪除（盤點作業紀錄「刪除」用）。本機模式不需要，直接略過 */
+  async deleteRow(tab, keyFields, keyValues) {
+    if (!this.cloud()) return;
+    const j = await this._post({ action: "deleteRow", tab, keyFields, keyValues });
+    if (j.error) throw new Error(j.error);
+  },
+
   /** 上傳紙本報表照片（存進該品牌的「紙本報表照片」資料夾）。本機模式直接回傳 base64；雲端模式存進 Drive 並回傳檔案連結 */
   async uploadPhoto(dataUrl, filename, brandName) {
     if (!this.cloud()) return dataUrl;

@@ -1772,17 +1772,25 @@ function FillZone({
       const r = new FileReader();
       r.onload = () => res({
         name: f.name,
-        dataUrl: r.result
+        dataUrl: r.result,
+        isNew: true
       });
       r.readAsDataURL(f);
     }))).then(photos => set("photos", [...form.photos, ...photos].slice(0, 6)));
   };
 
+  // 編輯中的紀錄 id；null＝目前是新增模式
+  const [editingId, setEditingId] = useState(null);
+
   // 資料驗證規則：必填欄位檢查
   const validate = () => {
     const err = {};
     if (!form.brandId) err.brandId = "請選擇品牌";
-    if (!form.storeId) err.storeId = "請選擇店鋪";
+    if (!form.storeId) err.storeId = "請選擇店鋪";else {
+      // 同月份同店鋪只能有一筆盤點作業紀錄；編輯模式排除自己那筆
+      const dup = db.records.find(r => r.storeId === form.storeId && r.month === month && r.id !== editingId);
+      if (dup) err.storeId = "本月已填寫過這家店的紀錄，如需修改請至下方紀錄按「編輯」";
+    }
     if (!form.dept) err.dept = "請填寫主責課";
     if (!form.filledBy) err.filledBy = "請選擇填寫人";
     if (!form.date) err.date = "請選擇盤點日期";
@@ -1803,11 +1811,18 @@ function FillZone({
       return;
     }
     setSaving(true);
-    toast("儲存中…");
+    toast(editingId ? "更新中…" : "儲存中…");
     try {
       const brandName = (db.brands.find(b => b.id === form.brandId) || {}).name || "";
       const photos = [];
       for (const p of form.photos) {
+        if (!p.isNew && p.url) {
+          photos.push({
+            name: p.name,
+            url: p.url
+          });
+          continue;
+        } // 編輯時保留既有照片，不重新上傳
         const url = await InventoryAPI.uploadPhoto(p.dataUrl, p.name, brandName);
         photos.push(InventoryAPI.cloud() ? {
           name: p.name,
@@ -1818,7 +1833,7 @@ function FillZone({
         });
       }
       const rec = {
-        id: uid("R"),
+        id: editingId || uid("R"),
         brandId: form.brandId,
         storeId: form.storeId,
         month,
@@ -1836,19 +1851,76 @@ function FillZone({
         photos,
         filledBy: form.filledBy
       };
-      const next = {
-        ...db,
-        records: [...db.records, rec]
-      };
-      setDB(next);
-      await InventoryAPI.appendRow(next, "records", rec);
+      if (editingId) {
+        const next = {
+          ...db,
+          records: db.records.map(r => r.id === editingId ? rec : r)
+        };
+        setDB(next);
+        await InventoryAPI.upsertRow("records", ["id"], rec);
+      } else {
+        const next = {
+          ...db,
+          records: [...db.records, rec]
+        };
+        setDB(next);
+        await InventoryAPI.appendRow(next, "records", rec);
+      }
       setForm(empty);
       setErrors({});
-      toast("盤點作業紀錄已儲存 ✔");
+      setEditingId(null);
+      toast(editingId ? "盤點作業紀錄已更新 ✔" : "盤點作業紀錄已儲存 ✔");
     } catch (e) {
       toast("儲存失敗，請確認網路或稍後再試");
     } finally {
       setSaving(false);
+    }
+  };
+
+  // 點「編輯」：把該筆紀錄帶回表單（既有照片保留 url，不會重新上傳）
+  const onEditRecord = r => {
+    setEditingId(r.id);
+    setForm({
+      brandId: r.brandId,
+      storeId: r.storeId,
+      date: r.date,
+      headcount: String(r.headcount),
+      dept: r.dept || "",
+      filledBy: r.filledBy || "",
+      arriveTime: r.arriveTime || "",
+      countStart: r.countStart || "",
+      countEnd: r.countEnd || "",
+      diffStart: r.diffStart || "",
+      diffEnd: r.diffEnd || "",
+      leaveTime: r.leaveTime || "",
+      special: r.special || "",
+      photos: (r.photos || []).map(p => ({
+        name: p.name,
+        url: p.url,
+        dataUrl: p.url
+      }))
+    });
+    setErrors({});
+  };
+  const cancelEdit = () => {
+    setEditingId(null);
+    setForm(empty);
+    setErrors({});
+  };
+  const onDeleteRecord = async r => {
+    if (!window.confirm(`確定要刪除「${r.storeName}」${r.date} 這筆盤點作業紀錄嗎？`)) return;
+    try {
+      await InventoryAPI.deleteRow("records", ["id"], {
+        id: r.id
+      });
+      setDB(d => ({
+        ...d,
+        records: d.records.filter(x => x.id !== r.id)
+      }));
+      if (editingId === r.id) cancelEdit();
+      toast("已刪除該筆紀錄");
+    } catch (err) {
+      toast("刪除失敗，請確認網路");
     }
   };
   const [filters, setFilters] = useState({});
@@ -2094,11 +2166,17 @@ function FillZone({
   }), /*#__PURE__*/React.createElement("button", {
     onClick: () => set("photos", form.photos.filter((_, j) => j !== i)),
     className: "absolute -top-2 -right-2 bg-red-500 text-white w-5 h-5 rounded-full text-xs"
-  }, "✕"))))), /*#__PURE__*/React.createElement("button", {
+  }, "✕"))))), /*#__PURE__*/React.createElement("div", {
+    className: "flex items-center gap-3"
+  }, /*#__PURE__*/React.createElement("button", {
     onClick: submit,
     disabled: saving,
     className: "px-6 py-2.5 bg-blue-600 hover:bg-blue-700 disabled:bg-slate-400 text-white font-medium rounded-lg"
-  }, saving ? "儲存中…" : "儲存盤點紀錄"))), /*#__PURE__*/React.createElement(SectionCard, {
+  }, saving ? editingId ? "更新中…" : "儲存中…" : editingId ? "更新盤點紀錄" : "儲存盤點紀錄"), editingId && /*#__PURE__*/React.createElement("button", {
+    onClick: cancelEdit,
+    disabled: saving,
+    className: "px-6 py-2.5 border border-slate-300 text-slate-600 hover:bg-slate-50 font-medium rounded-lg"
+  }, "取消編輯")))), /*#__PURE__*/React.createElement(SectionCard, {
     title: "🗂 本月盤點作業紀錄",
     subtitle: `${month} 共 ${myRecords.length} 筆（各欄用選單篩選）`
   }, /*#__PURE__*/React.createElement("div", {
@@ -2143,7 +2221,9 @@ function FillZone({
     className: "py-2 pr-4"
   }, "填寫人"), /*#__PURE__*/React.createElement("th", {
     className: "py-2 pr-4"
-  }, "紙本照片")), /*#__PURE__*/React.createElement("tr", {
+  }, "紙本照片"), /*#__PURE__*/React.createElement("th", {
+    className: "py-2 pr-4"
+  }, "操作")), /*#__PURE__*/React.createElement("tr", {
     className: "border-b"
   }, /*#__PURE__*/React.createElement("th", {
     className: "py-1 pr-4"
@@ -2195,7 +2275,7 @@ function FillZone({
     value: filters.filledBy,
     onChange: v => setFilt("filledBy", v),
     options: distinctVals(allRecords, "filledBy")
-  })), /*#__PURE__*/React.createElement("th", null))), /*#__PURE__*/React.createElement("tbody", null, myRecords.map(r => /*#__PURE__*/React.createElement("tr", {
+  })), /*#__PURE__*/React.createElement("th", null), /*#__PURE__*/React.createElement("th", null))), /*#__PURE__*/React.createElement("tbody", null, myRecords.map(r => /*#__PURE__*/React.createElement("tr", {
     key: r.id,
     className: "border-b last:border-0"
   }, /*#__PURE__*/React.createElement("td", {
@@ -2232,8 +2312,18 @@ function FillZone({
   }, (r.photos || []).length > 0 ? /*#__PURE__*/React.createElement("button", {
     onClick: () => setViewRecord(r),
     className: "text-blue-600 hover:underline"
-  }, "查看（", r.photos.length, "）") : "—"))), myRecords.length === 0 && /*#__PURE__*/React.createElement("tr", null, /*#__PURE__*/React.createElement("td", {
-    colSpan: "15",
+  }, "查看（", r.photos.length, "）") : "—"), /*#__PURE__*/React.createElement("td", {
+    className: "py-2 pr-4"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "flex gap-2"
+  }, /*#__PURE__*/React.createElement("button", {
+    onClick: () => onEditRecord(r),
+    className: "text-blue-600 hover:underline"
+  }, "編輯"), /*#__PURE__*/React.createElement("button", {
+    onClick: () => onDeleteRecord(r),
+    className: "text-red-500 hover:underline"
+  }, "刪除"))))), myRecords.length === 0 && /*#__PURE__*/React.createElement("tr", null, /*#__PURE__*/React.createElement("td", {
+    colSpan: "16",
     className: "py-6 text-center text-slate-400"
   }, "查無符合條件的紀錄")))))), viewRecord && /*#__PURE__*/React.createElement("div", {
     className: "fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4",

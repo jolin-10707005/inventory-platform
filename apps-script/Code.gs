@@ -50,6 +50,8 @@ function doPost(e) {
       case "append":
         appendRow(body.tab, body.row);
         return jsonOut({ ok: true });
+      case "deleteRow":
+        return jsonOut(deleteRow(body.tab, body.keyFields, body.keyValues));
       case "upsertRow":
         return jsonOut(upsertRow(body.tab, body.keyFields, body.row));
       case "uploadPhoto":
@@ -169,6 +171,22 @@ function upsertRow(tab, keyFields, row) {
     var rowIndex = sh.getLastRow() + 1;
     var rg2 = sh.getRange(rowIndex, 1, 1, headers.length);
     rg2.setNumberFormat("@"); rg2.setValues([line]);
+  }
+  return { ok: true };
+}
+
+// 依 keyFields 找出符合的那一列並整列刪除（盤點作業紀錄「刪除」用）。找不到就當作已經沒有這筆，視為成功。
+function deleteRow(tab, keyFields, keyValues) {
+  var sh = sheet(tab);
+  var values = sh.getDataRange().getValues();
+  if (values.length < 2) return { ok: true };
+  var headers = values[0];
+  for (var i = 1; i < values.length; i++) {
+    var isMatch = keyFields.every(function (k) {
+      var colIdx = headers.indexOf(k);
+      return colIdx >= 0 && String(values[i][colIdx]) === String(keyValues[k]);
+    });
+    if (isMatch) { sh.deleteRow(i + 1); return { ok: true }; }
   }
   return { ok: true };
 }
