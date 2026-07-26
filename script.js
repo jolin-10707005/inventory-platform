@@ -116,6 +116,12 @@ function timeStrToFrac(timeStr) {
   return (Number(m[1]) * 60 + Number(m[2])) / 1440;
 }
 
+// 日期字串（"2026-01-07" 或 "2026/1/7" 等常見分隔皆可）→ 純數字 "YYYYMMDD"（補零），供命名檔案用；解析不出來回傳空字串
+function dateToCompact(dateStr) {
+  const m = String(dateStr || "").trim().match(/^(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})/);
+  return m ? `${m[1]}${String(m[2]).padStart(2, "0")}${String(m[3]).padStart(2, "0")}` : "";
+}
+
 // 後端（Google Sheets 純文字格式）讀回的數值/布林為字串，統一轉型
 function num(v) { const n = Number(v); return isNaN(n) ? 0 : n; }
 function truthy(v) { return v === true || v === 1 || v === "1" || v === "true" || v === "TRUE" || v === "是"; }
@@ -758,8 +764,12 @@ function CountUploadZone({ db, setDB, month, setMonth, toast }) {
           }
         }
 
-        const url = await InventoryAPI.uploadCountSheet(reader.result, f.name, brand ? brand.name : "", month);
-        const rec = { storeId: store.id, month, fileName: f.name, fileUrl: url, total, uploadedAt: new Date().toISOString().slice(0, 10) };
+        // 存檔統一命名「盤點總表_盤點日期_店號店名-合計盤點總數」，不用客戶原始檔名，方便直接在 Drive 裡辨識
+        const ext = (f.name.match(/\.(xlsx|xls)$/i) || [".xlsx"])[0];
+        const dateCompact = dateToCompact(store.auditDate);
+        const savedName = `盤點總表_${dateCompact}_${store.code}${store.name}-${total == null ? "" : total}${ext}`;
+        const url = await InventoryAPI.uploadCountSheet(reader.result, savedName, brand ? brand.name : "", month);
+        const rec = { storeId: store.id, month, fileName: savedName, fileUrl: url, total, uploadedAt: new Date().toISOString().slice(0, 10) };
         await InventoryAPI.upsertRow("countTotals", ["storeId", "month"], rec, brandId); // 上傳當下就直接確定寫入 Sheet，不靠背景批次同步
         setDB((d) => ({ ...d, countTotals: [...(d.countTotals || []).filter((c) => !(c.storeId === store.id && c.month === month)), rec] }));
         if (prevUrl && prevUrl !== url) InventoryAPI.deleteFile(prevUrl).catch(() => {});
@@ -1197,11 +1207,15 @@ function FillZone({ db, setDB, month, setMonth, toast }) {
     toast(editingId ? "更新中…" : "儲存中…");
     try {
       const brandName = (db.brands.find((b) => b.id === form.brandId) || {}).name || "";
+      // 存檔統一命名「店號店名-盤點日期-序號」，依這張在表單裡的順序編號（1、2、3…），不用手機拍照的原始檔名
       const photos = [];
-      for (const p of form.photos) {
+      for (let i = 0; i < form.photos.length; i++) {
+        const p = form.photos[i];
         if (!p.isNew && p.url) { photos.push({ name: p.name, url: p.url }); continue; } // 編輯時保留既有照片，不重新上傳
-        const url = await InventoryAPI.uploadPhoto(p.dataUrl, p.name, brandName, month);
-        photos.push(InventoryAPI.cloud() ? { name: p.name, url } : { name: p.name, url: p.dataUrl });
+        const ext = (p.name.match(/\.\w+$/) || [".jpg"])[0];
+        const savedName = `${selectedStore ? selectedStore.code + selectedStore.name : "未知店鋪"}-${dateToCompact(form.date)}-${i + 1}${ext}`;
+        const url = await InventoryAPI.uploadPhoto(p.dataUrl, savedName, brandName, month);
+        photos.push(InventoryAPI.cloud() ? { name: savedName, url } : { name: savedName, url: p.dataUrl });
       }
       const rec = {
         id: editingId || uid("R"), brandId: form.brandId, storeId: form.storeId, month,
