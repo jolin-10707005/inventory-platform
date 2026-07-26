@@ -1682,7 +1682,6 @@ function FillZone({
   setDB,
   month,
   setMonth,
-  user,
   toast
 }) {
   const empty = {
@@ -1690,6 +1689,8 @@ function FillZone({
     storeId: "",
     date: "",
     headcount: "",
+    dept: "",
+    filledBy: "",
     arriveTime: "",
     countStart: "",
     countEnd: "",
@@ -1713,27 +1714,41 @@ function FillZone({
     return m ? `${m[1]}-${String(m[2]).padStart(2, "0")}-${String(m[3]).padStart(2, "0")}` : "";
   };
 
-  // 換月：店鋪名單會變，清空已選店鋪與其帶出的日期／人數
+  // 換月：店鋪名單會變，清空已選店鋪與其帶出的日期／人數／主責課／填寫人
   const onMonthChange = v => {
     setMonth(v);
     setForm(f => ({
       ...f,
       storeId: "",
       date: "",
-      headcount: ""
+      headcount: "",
+      dept: "",
+      filledBy: ""
     }));
   };
 
-  // 選店鋪：盤點日期、盤點人數皆帶店鋪名單上登記的值（皆可再手動調整）
+  // 選店鋪：盤點日期、盤點人數、主責課皆帶店鋪名單上登記的值（皆可再手動調整）；填寫人清空重選（選單依主責課而定）
   const onStore = v => {
     const store = db.stores.find(s => s.id === v);
     setForm(f => ({
       ...f,
       storeId: v,
       date: store ? auditDateToInput(store.auditDate) : "",
-      headcount: store && store.headcount ? String(store.headcount) : ""
+      headcount: store && store.headcount ? String(store.headcount) : "",
+      dept: store ? store.dept || "" : "",
+      filledBy: ""
     }));
   };
+
+  // 主責課改變（手動調整時）：填寫人選單跟著變，清空重選
+  const onDept = v => setForm(f => ({
+    ...f,
+    dept: v,
+    filledBy: ""
+  }));
+
+  // 填寫人選單：該品牌本月「盤點人員名單」中與目前主責課相符的人員
+  const deptStaffOptions = form.dept ? db.staff.filter(p => p.brandId === form.brandId && p.month === month && p.dept === form.dept) : [];
 
   // 實點件數：不可手動輸入，直接帶「盤點總表上傳」擷取的合計盤點總數；有分倉的店鋪加總主店＋所有分倉
   const selectedStore = db.stores.find(s => s.id === form.storeId);
@@ -1760,6 +1775,8 @@ function FillZone({
     const err = {};
     if (!form.brandId) err.brandId = "請選擇品牌";
     if (!form.storeId) err.storeId = "請選擇店鋪";
+    if (!form.dept) err.dept = "請填寫主責課";
+    if (!form.filledBy) err.filledBy = "請選擇填寫人";
     if (!form.date) err.date = "請選擇盤點日期";
     if (!form.countStart || !form.countEnd) err.count = "請填寫存貨開始與結束盤點時間";
     if (!form.headcount || Number(form.headcount) <= 0) err.headcount = "人數須大於 0";
@@ -1800,6 +1817,7 @@ function FillZone({
         date: form.date,
         headcount: Number(form.headcount),
         pieces: derivedPieces,
+        dept: form.dept,
         arriveTime: form.arriveTime,
         countStart: form.countStart,
         countEnd: form.countEnd,
@@ -1808,7 +1826,7 @@ function FillZone({
         leaveTime: form.leaveTime,
         special: form.special,
         photos,
-        filledBy: user
+        filledBy: form.filledBy
       };
       const next = {
         ...db,
@@ -1838,7 +1856,7 @@ function FillZone({
       brandName: brand ? brand.name : "",
       storeName: store ? store.name : "",
       storeCode: store ? store.code : "",
-      dept: store ? store.dept : "",
+      dept: r.dept || (store ? store.dept : ""),
       piecesNum: num(r.pieces)
     };
   });
@@ -1929,13 +1947,33 @@ function FillZone({
       brandId: v,
       storeId: "",
       date: "",
-      headcount: ""
+      headcount: "",
+      dept: "",
+      filledBy: ""
     })),
     onStore: onStore
-  })), /*#__PURE__*/React.createElement(Err, {
+  }), /*#__PURE__*/React.createElement("input", {
+    placeholder: "主責課",
+    value: form.dept,
+    onChange: e => onDept(e.target.value),
+    className: "px-3 py-2 border border-slate-300 rounded-lg text-sm w-28 focus:ring-2 focus:ring-blue-500 outline-none"
+  }), /*#__PURE__*/React.createElement("select", {
+    value: form.filledBy,
+    onChange: e => set("filledBy", e.target.value),
+    className: "px-3 py-2 border border-slate-300 rounded-lg text-sm bg-white focus:ring-2 focus:ring-blue-500 outline-none"
+  }, /*#__PURE__*/React.createElement("option", {
+    value: ""
+  }, "— 請選擇填寫人 —"), deptStaffOptions.map(p => /*#__PURE__*/React.createElement("option", {
+    key: p.id,
+    value: p.name
+  }, p.name)))), /*#__PURE__*/React.createElement(Err, {
     k: "brandId"
   }), /*#__PURE__*/React.createElement(Err, {
     k: "storeId"
+  }), /*#__PURE__*/React.createElement(Err, {
+    k: "dept"
+  }), /*#__PURE__*/React.createElement(Err, {
+    k: "filledBy"
   })), /*#__PURE__*/React.createElement("div", {
     className: "grid grid-cols-1 md:grid-cols-3 gap-4"
   }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
@@ -4765,7 +4803,6 @@ function App() {
     setDB: setDB,
     month: month,
     setMonth: setMonth,
-    user: user,
     toast: toast
   }), tab === "analysis" && /*#__PURE__*/React.createElement(AnalysisZone, {
     db: db,
