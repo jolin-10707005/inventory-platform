@@ -651,10 +651,34 @@ function CountUploadZone({ db, setDB, month, setMonth, toast }) {
     .map((s) => ({ ...s, countStatus: countOf(s.id) ? "已上傳" : "尚未上傳" }));
   const stores = sortStoresByDateCode(baseStores.filter((s) => matchFilters(s, filters)));
 
-  // 儀表板統計（不受表格上方篩選影響）：母體＝主店 + 有庫存數的分倉。
-  // 「有庫存數的分倉」＝該分倉本月有產製庫存檔（mastersIndex 有該店 stock 記錄；分倉庫存檔是從客戶庫存檔切出來的，有切出來代表有庫存資料）
+  // 儀表板統計（不受表格上方篩選影響）：母體＝主店 + 有庫存數量的分倉（庫存數量加總為 0 的分倉不計入，
+  // 代表這個月分倉沒有實際庫存可盤，不用它交報表）。mastersIndex 只知道「有沒有產製庫存檔」，不知道實際數量，
+  // 所以要另外抓有庫存檔紀錄的分倉的實際庫存檔內容來加總；抓取進行中或失敗時，先以「有紀錄」為準，避免畫面閃爍。
   const idx = db.mastersIndex || [];
-  const hasStock = (storeId) => idx.some((m) => m.storeId === storeId && m.month === month && m.type === "stock");
+  const [subQtyMap, setSubQtyMap] = useState({});
+  useEffect(() => {
+    let cancelled = false;
+    const subCandidates = db.stores.filter((s) => s.isSub && s.brandId === brandId && s.month === month
+      && idx.some((m) => m.storeId === s.id && m.month === month && m.type === "stock"));
+    if (subCandidates.length === 0) { setSubQtyMap({}); return; }
+    (async () => {
+      const pairs = await Promise.all(subCandidates.map(async (s) => {
+        try {
+          const m = await InventoryAPI.getMaster(s.id, month, "stock");
+          const total = (m && m.rows) ? m.rows.reduce((a, r) => a + num(r[QTY_COL]), 0) : 0;
+          return [s.id, total];
+        } catch (e) { return [s.id, 0]; }
+      }));
+      if (!cancelled) {
+        const map = {}; pairs.forEach(([id, total]) => { map[id] = total; });
+        setSubQtyMap(map);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [brandId, month, db.mastersIndex, db.stores]);
+  const hasStock = (storeId) => Object.prototype.hasOwnProperty.call(subQtyMap, storeId)
+    ? subQtyMap[storeId] > 0
+    : idx.some((m) => m.storeId === storeId && m.month === month && m.type === "stock");
   const dashStores = baseStores.filter((s) => !s.isSub || hasStock(s.id));
   const totalStores = dashStores.length;
   const uploadedCount = dashStores.filter((s) => countOf(s.id)).length;
