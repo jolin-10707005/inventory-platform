@@ -56,11 +56,12 @@ const InventoryAPI = {
     try { localStorage.setItem(_CLOUD_CACHE_KEY, JSON.stringify(db)); } catch (e) { /* 快取失敗不影響正常流程 */ }
   },
 
-  /** 讀取單一店鋪主檔（含完整資料列）。回傳 { columns, rows } 或 null */
-  async getMaster(storeId, month, type) {
+  /** 讀取單一店鋪主檔（含完整資料列）。回傳 { columns, rows } 或 null。
+   *  brandId 供後端決定要去哪個品牌的試算表找（各品牌資料可能分散在不同試算表，見 Code.gs 的 BRAND_SPREADSHEET_IDS） */
+  async getMaster(storeId, month, type, brandId) {
     if (this.cloud()) {
       const res = await fetch(API_CONFIG.APPS_SCRIPT_URL +
-        `?action=getMaster&storeId=${encodeURIComponent(storeId)}&month=${encodeURIComponent(month)}&type=${encodeURIComponent(type)}`);
+        `?action=getMaster&storeId=${encodeURIComponent(storeId)}&month=${encodeURIComponent(month)}&type=${encodeURIComponent(type)}&brandId=${encodeURIComponent(brandId || "")}`);
       return await res.json();
     }
     const m = this._localMasters().find((x) => x.storeId === storeId && x.month === month && x.type === type);
@@ -78,14 +79,14 @@ const InventoryAPI = {
   /** 批次寫入多個店鋪的主檔/庫存檔（歐聖寬表用）：baseRows=[[商品編號,物品名稱,成本],...] 只送一次（各店鋪共用），
    *  stores=[{storeId, qty:[各列數量]}] 每店鋪只帶自己的數量陣列，不重複帶整份商品列——避免商品數×店鋪數把單次請求撐爆。
    *  回傳成功寫入的 storeId 陣列 */
-  async putMasterBatch({ month, type, srcDate, srcFile, baseRows, stores }) {
+  async putMasterBatch({ month, type, srcDate, srcFile, baseRows, stores, brandId }) {
     if (!this.cloud()) {
       for (const st of stores) {
         const rows = baseRows.map((b, i) => ({
           "商品編號": b[0], "barcode": b[0], "舊商品編號2": "",
           "物品名稱": b[1], "庫存數量": st.qty[i], "品項平均成本": b[2],
         }));
-        await this.putMaster({ storeId: st.storeId, month, type, srcDate, srcFile, columns: ["商品編號", "barcode", "舊商品編號2", "物品名稱", "庫存數量", "品項平均成本"], rows });
+        await this.putMaster({ storeId: st.storeId, month, type, srcDate, srcFile, brandId, columns: ["商品編號", "barcode", "舊商品編號2", "物品名稱", "庫存數量", "品項平均成本"], rows });
       }
       return stores.map((s) => s.storeId);
     }
@@ -93,7 +94,7 @@ const InventoryAPI = {
     // Apps Script 執行記錄裡完全查不到）。依商品列切成多個小請求依序送出，呼叫端完全不用知道這件事。
     const CHUNK_ROWS = 2000;
     if (baseRows.length <= CHUNK_ROWS) {
-      const j = await this._post({ action: "putMasterBatch", month, type, srcDate, srcFile, baseRows, stores, append: false });
+      const j = await this._post({ action: "putMasterBatch", month, type, srcDate, srcFile, baseRows, stores, brandId, append: false });
       return j.storeIds || [];
     }
     let storeIds = [];
@@ -101,15 +102,15 @@ const InventoryAPI = {
       const end = Math.min(start + CHUNK_ROWS, baseRows.length);
       const baseRowsChunk = baseRows.slice(start, end);
       const storesChunk = stores.map((st) => ({ storeId: st.storeId, qty: st.qty.slice(start, end) }));
-      const j = await this._post({ action: "putMasterBatch", month, type, srcDate, srcFile, baseRows: baseRowsChunk, stores: storesChunk, append: start > 0 });
+      const j = await this._post({ action: "putMasterBatch", month, type, srcDate, srcFile, baseRows: baseRowsChunk, stores: storesChunk, brandId, append: start > 0 });
       if (start === 0) storeIds = j.storeIds || [];
     }
     return storeIds;
   },
 
   /** 依來源檔名刪除主檔（同檔名重新上傳前先清空） */
-  async deleteMastersByFile(srcFile, month) {
-    if (this.cloud()) { await this._post({ action: "deleteMastersByFile", srcFile, month }); return; }
+  async deleteMastersByFile(srcFile, month, brandId) {
+    if (this.cloud()) { await this._post({ action: "deleteMastersByFile", srcFile, month, brandId }); return; }
     const list = this._localMasters().filter((m) => !(m.srcFile === srcFile && m.month === month));
     localStorage.setItem(_MASTERS_KEY, JSON.stringify(list));
   },
@@ -130,16 +131,16 @@ const InventoryAPI = {
    *  用於 Layout圖／盤點總表這類「上傳當下就要確定成功寫入」的紀錄，避免依賴背景批次同步的時機、
    *  也避免批次同步悄悄失敗後，下次自動刷新用舊資料把畫面剛顯示的「已上傳」蓋掉。
    *  本機模式不需要（setDB 本身就會同步寫入 localStorage），直接略過。 */
-  async upsertRow(tab, keyFields, row) {
+  async upsertRow(tab, keyFields, row, brandId) {
     if (!this.cloud()) return;
-    const j = await this._post({ action: "upsertRow", tab, keyFields, row });
+    const j = await this._post({ action: "upsertRow", tab, keyFields, row, brandId });
     if (j.error) throw new Error(j.error);
   },
 
   /** 依 keyFields 找到符合的那一列並整列刪除（盤點作業紀錄「刪除」用）。本機模式不需要，直接略過 */
-  async deleteRow(tab, keyFields, keyValues) {
+  async deleteRow(tab, keyFields, keyValues, brandId) {
     if (!this.cloud()) return;
-    const j = await this._post({ action: "deleteRow", tab, keyFields, keyValues });
+    const j = await this._post({ action: "deleteRow", tab, keyFields, keyValues, brandId });
     if (j.error) throw new Error(j.error);
   },
 
@@ -174,9 +175,9 @@ const InventoryAPI = {
   /** Layout 圖下載：後端把上傳的 Excel 轉成 PDF，回傳 { filename, base64 }（storeId/month 供後端查該店該月份
    *  有沒有手動轉檔例外設定——指定分頁/範圍，用於少數店鋪畫法跟大多數店不一樣、自動判斷會抓錯的情況）。
    *  本機模式無後端轉檔，回傳 null 讓呼叫端改為下載原始檔 */
-  async layoutPdf(fileUrl, fileName, printRange, storeId, month) {
+  async layoutPdf(fileUrl, fileName, printRange, storeId, month, brandId) {
     if (!this.cloud()) return null;
-    const j = await this._post({ action: "layoutPdf", fileUrl, fileName, printRange, storeId, month });
+    const j = await this._post({ action: "layoutPdf", fileUrl, fileName, printRange, storeId, month, brandId });
     if (j.error) throw new Error(j.error);
     return { filename: j.filename, base64: j.base64 };
   },
@@ -189,7 +190,8 @@ const InventoryAPI = {
   },
 
   /** 批次打包下載（伺服器端 zip，避免瀏覽器端抓既有 Drive 檔案的 CORS 限制）
-   *  files = [{fileUrl, fileName}]；asLayoutPdf=true 時每份先轉成 PDF 再打包（Layout 圖用）。
+   *  files = [{fileUrl, fileName, storeId, month, brandId}]；asLayoutPdf=true 時每份先轉成 PDF 再打包（Layout 圖用，
+   *  brandId 供後端查該店該月份有沒有手動轉檔例外設定要去哪個品牌的試算表找）。
    *  回傳 { filename, base64 }。本機模式無 Drive，回傳 null 讓呼叫端改用逐個下載 */
   async zipFiles(files, zipName, asLayoutPdf) {
     if (!this.cloud()) return null;

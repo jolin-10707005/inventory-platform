@@ -645,7 +645,8 @@ async function bulkDownloadFiles(list, zipBaseName, toast, asLayoutPdf) {
         fileName: l.fileName,
         printRange: l.printRange,
         storeId: l.storeId,
-        month: l.month
+        month: l.month,
+        brandId: l.brandId
       })), zipBaseName, asLayoutPdf);
       if (z) {
         downloadBase64Zip(z.filename, z.base64);
@@ -840,7 +841,7 @@ function DownloadZone({
     const namePart = type === "master" && osheng ? store.category || store.name : store.name;
     setBusy(store.id + type);
     try {
-      const m = await InventoryAPI.getMaster(key, month, type);
+      const m = await InventoryAPI.getMaster(key, month, type, brandId);
       if (!m || !m.columns || m.columns.length === 0) {
         toast(`查無此${label}，請重新整理或請管理者上傳`);
         return;
@@ -1121,7 +1122,7 @@ function CountUploadZone({
     (async () => {
       const pairs = await Promise.all(subCandidates.map(async s => {
         try {
-          const m = await InventoryAPI.getMaster(s.id, month, "stock");
+          const m = await InventoryAPI.getMaster(s.id, month, "stock", brandId);
           const total = m && m.rows ? m.rows.reduce((a, r) => a + num(r[QTY_COL]), 0) : 0;
           return [s.id, total];
         } catch (e) {
@@ -1148,7 +1149,10 @@ function CountUploadZone({
 
   // 本月總表下載：一店一檔，不合併，交由伺服器端打包成 zip（或本機模式依序下載）
   const downloadAllCounts = async () => {
-    const raw = (db.countTotals || []).filter(c => c.month === month && db.stores.some(s => s.id === c.storeId && s.brandId === brandId));
+    const raw = (db.countTotals || []).filter(c => c.month === month && db.stores.some(s => s.id === c.storeId && s.brandId === brandId)).map(c => ({
+      ...c,
+      brandId
+    }));
     const list = assignZipFolders(raw, storeId => db.stores.find(s => s.id === storeId));
     setDownloadingAll(true);
     try {
@@ -1183,7 +1187,7 @@ function CountUploadZone({
         // （例如貼到別家店的底稿、或庫存檔後來又重新上傳過），擋下上傳避免後續差異金額算錯
         const stockTotalInSheet = findLabeledTotal(aoa, STOCK_TOTAL_LABEL);
         if (stockTotalInSheet != null) {
-          const stockMaster = await InventoryAPI.getMaster(store.id, month, "stock");
+          const stockMaster = await InventoryAPI.getMaster(store.id, month, "stock", brandId);
           if (stockMaster && stockMaster.rows && stockMaster.rows.length > 0) {
             const systemStockTotal = stockMaster.rows.reduce((a, r) => a + num(r[QTY_COL]), 0);
             if (systemStockTotal !== stockTotalInSheet) {
@@ -1201,7 +1205,7 @@ function CountUploadZone({
           total,
           uploadedAt: new Date().toISOString().slice(0, 10)
         };
-        await InventoryAPI.upsertRow("countTotals", ["storeId", "month"], rec); // 上傳當下就直接確定寫入 Sheet，不靠背景批次同步
+        await InventoryAPI.upsertRow("countTotals", ["storeId", "month"], rec, brandId); // 上傳當下就直接確定寫入 Sheet，不靠背景批次同步
         setDB(d => ({
           ...d,
           countTotals: [...(d.countTotals || []).filter(c => !(c.storeId === store.id && c.month === month)), rec]
@@ -1408,7 +1412,7 @@ function LayoutZone({
     };
     setOverrideBusy(true);
     try {
-      await InventoryAPI.upsertRow("layoutOverrides", ["storeId", "month"], rec);
+      await InventoryAPI.upsertRow("layoutOverrides", ["storeId", "month"], rec, brandId);
       setDB(d => ({
         ...d,
         layoutOverrides: [...(d.layoutOverrides || []).filter(o => !(o.storeId === store.id && o.month === month)), rec]
@@ -1430,7 +1434,7 @@ function LayoutZone({
     };
     setOverrideBusy(true);
     try {
-      await InventoryAPI.upsertRow("layoutOverrides", ["storeId", "month"], rec);
+      await InventoryAPI.upsertRow("layoutOverrides", ["storeId", "month"], rec, brandId);
       setDB(d => ({
         ...d,
         layoutOverrides: [...(d.layoutOverrides || []).filter(o => !(o.storeId === store.id && o.month === month)), rec]
@@ -1476,7 +1480,7 @@ function LayoutZone({
           printRange: printRange || "",
           uploadedAt: new Date().toISOString().slice(0, 10)
         };
-        await InventoryAPI.upsertRow("layouts", ["storeId", "month"], rec); // 上傳當下就直接確定寫入 Sheet，不靠背景批次同步
+        await InventoryAPI.upsertRow("layouts", ["storeId", "month"], rec, brandId); // 上傳當下就直接確定寫入 Sheet，不靠背景批次同步
         setDB(d => ({
           ...d,
           layouts: [...(d.layouts || []).filter(l => !(l.storeId === store.id && l.month === month)), rec]
@@ -1509,7 +1513,7 @@ function LayoutZone({
   const downloadOne = async (store, l) => {
     setDlBusy(store.id);
     try {
-      const pdf = await InventoryAPI.layoutPdf(l.fileUrl, l.fileName, l.printRange, store.id, month);
+      const pdf = await InventoryAPI.layoutPdf(l.fileUrl, l.fileName, l.printRange, store.id, month, brandId);
       if (pdf) {
         downloadBase64File(pdf.filename, pdf.base64, "application/pdf");
         toast(`已下載「${store.name}」Layout 圖（PDF）✔`);
@@ -1534,7 +1538,10 @@ function LayoutZone({
   // 本月Layout圖下載：一店一檔，不合併；交由伺服器端打包成 zip（本機模式依序下載原檔）。
   // asPdf=true 時伺服器會先把每張 Excel 轉成 PDF 再打包；asPdf=false 直接打包原始 Excel 檔。
   const downloadAll = asPdf => async () => {
-    const raw = (db.layouts || []).filter(l => l.month === month && db.stores.some(s => s.id === l.storeId && s.brandId === brandId));
+    const raw = (db.layouts || []).filter(l => l.month === month && db.stores.some(s => s.id === l.storeId && s.brandId === brandId)).map(l => ({
+      ...l,
+      brandId
+    }));
     const list = assignZipFolders(raw, storeId => db.stores.find(s => s.id === storeId));
     setDownloadingAll(asPdf ? "pdf" : "excel");
     try {
@@ -1898,7 +1905,7 @@ function FillZone({
           records: db.records.map(r => r.id === editingId ? rec : r)
         };
         setDB(next);
-        await InventoryAPI.upsertRow("records", ["id"], rec);
+        await InventoryAPI.upsertRow("records", ["id"], rec, rec.brandId);
       } else {
         const next = {
           ...db,
@@ -1953,7 +1960,7 @@ function FillZone({
     try {
       await InventoryAPI.deleteRow("records", ["id"], {
         id: r.id
-      });
+      }, r.brandId);
       setDB(d => ({
         ...d,
         records: d.records.filter(x => x.id !== r.id)
@@ -2601,7 +2608,7 @@ function UploadZone({
       return;
     }
     const srcDate = parseDateFromName(file.name);
-    await InventoryAPI.deleteMastersByFile(file.name, month); // 同檔名先清空舊產出
+    await InventoryAPI.deleteMastersByFile(file.name, month, brandId); // 同檔名先清空舊產出
     const addedIdx = [];
     for (const d of datasets) {
       await InventoryAPI.putMaster({
@@ -2610,6 +2617,7 @@ function UploadZone({
         type: fileType,
         srcDate,
         srcFile: file.name,
+        brandId,
         columns: MASTER_COLS,
         rows: d.rows
       });
@@ -2695,7 +2703,7 @@ function UploadZone({
         return;
       }
       const srcDate = parseDateFromName(file.name);
-      await InventoryAPI.deleteMastersByFile(file.name, month); // 同檔名先清空舊產出
+      await InventoryAPI.deleteMastersByFile(file.name, month, brandId); // 同檔名先清空舊產出
       const addedIdx = [];
       for (const cat of cats) {
         await InventoryAPI.putMaster({
@@ -2704,6 +2712,7 @@ function UploadZone({
           type: "master",
           srcDate,
           srcFile: file.name,
+          brandId,
           columns: MASTER_COLS,
           rows
         });
@@ -2763,12 +2772,13 @@ function UploadZone({
         return;
       }
       const srcDate = parseDateFromName(file.name);
-      await InventoryAPI.deleteMastersByFile(file.name, month); // 同檔名先清空舊產出
+      await InventoryAPI.deleteMastersByFile(file.name, month, brandId); // 同檔名先清空舊產出
       const addedStoreIds = await InventoryAPI.putMasterBatch({
         month,
         type: "stock",
         srcDate,
         srcFile: file.name,
+        brandId,
         baseRows,
         stores: batchStores
       });
@@ -2811,7 +2821,7 @@ function UploadZone({
     if (!confirm(`確定要刪除「${u.fileName}」這筆上傳，以及它已產製的主檔／庫存檔嗎？`)) return;
     setRemoving(u.id);
     try {
-      await InventoryAPI.deleteMastersByFile(u.fileName, u.month);
+      await InventoryAPI.deleteMastersByFile(u.fileName, u.month, u.brandId);
       const next = {
         ...db,
         uploads: db.uploads.filter(x => x.id !== u.id),

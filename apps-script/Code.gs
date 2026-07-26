@@ -13,6 +13,26 @@ var PHOTO_FOLDER_ID = "1h9qjSAx2-sojs5_uP307qmBUvw-XiDhn";
 
 var TABS = ["brands", "stores", "staff", "prices", "records", "uploads", "aliases", "categoryAliases", "manuals", "layouts", "countTotals", "opsMargins", "layoutOverrides"];
 
+// 各品牌自己的 Google Sheets 試算表 ID：避免三品牌資料量加在一起，撞到 Google Sheets 單一試算表
+// 1000 萬儲存格上限（歐聖之前就撞過一次，才把庫存檔改成寬表格式，見下方 migrateStockToWideFormat 的說明）。
+// 沒有在這裡列出的品牌（目前是歐聖），資料留在這支 Apps Script 綁定的試算表本身，不用搬、不用改。
+// 設定方式：
+//   1. 執行一次 setupBrandSpreadsheets()，執行記錄會印出可以直接貼進來的設定行
+//   2. 把印出的行貼到下面這個物件裡，存檔
+//   3. 執行一次 migrateBrandDataToOwnSpreadsheets()，把該品牌現有資料搬到新試算表（沒有資料的話會立刻結束）
+//   4. Deploy → Manage deployments → Edit → New version，部署新版本
+var BRAND_SPREADSHEET_IDS = {
+  // "貼上英斯伯的品牌id": "貼上英斯伯新試算表的ID",
+  // "貼上歐都納的品牌id": "貼上歐都納新試算表的ID",
+};
+
+// 品牌 id → 該品牌資料實際存放的試算表；沒有特別設定的品牌（含空字串，代表「主試算表」）都回傳這支
+// Apps Script 綁定的試算表本身
+function getSpreadsheetForBrand(brandId) {
+  var id = BRAND_SPREADSHEET_IDS[brandId];
+  return id ? SpreadsheetApp.openById(id) : SpreadsheetApp.getActiveSpreadsheet();
+}
+
 // 分頁顯示名稱（程式內部仍用英文代碼；工作表分頁改中文，方便人工檢視）
 var SHEET_NAMES = {
   brands: "品牌",
@@ -35,7 +55,7 @@ function doGet(e) {
   var p = (e && e.parameter) || {};
   var action = p.action || "getAll";
   if (action === "getAll") return jsonOut(getAll());
-  if (action === "getMaster") return jsonOut(getMaster(p.storeId, p.month, p.type));
+  if (action === "getMaster") return jsonOut(getMaster(p.storeId, p.month, p.type, p.brandId));
   return jsonOut({ error: "unknown action: " + action });
 }
 
@@ -48,12 +68,12 @@ function doPost(e) {
         replaceTab(body.tab, body.rows);
         return jsonOut({ ok: true });
       case "append":
-        appendRow(body.tab, body.row);
+        appendRow(body.tab, body.row, body.brandId);
         return jsonOut({ ok: true });
       case "deleteRow":
-        return jsonOut(deleteRow(body.tab, body.keyFields, body.keyValues));
+        return jsonOut(deleteRow(body.tab, body.keyFields, body.keyValues, body.brandId));
       case "upsertRow":
-        return jsonOut(upsertRow(body.tab, body.keyFields, body.row));
+        return jsonOut(upsertRow(body.tab, body.keyFields, body.row, body.brandId));
       case "uploadPhoto":
         return jsonOut({ ok: true, url: uploadPhoto(body.dataUrl, body.filename, body.brandName) });
       case "uploadManual":
@@ -67,14 +87,14 @@ function doPost(e) {
       case "zipFiles":
         return jsonOut(zipFiles(body.files, body.zipName, body.asLayoutPdf));
       case "layoutPdf":
-        return jsonOut(layoutPdf(body.fileUrl, body.fileName, body.printRange, body.storeId, body.month));
+        return jsonOut(layoutPdf(body.fileUrl, body.fileName, body.printRange, body.storeId, body.month, body.brandId));
       case "putMaster":
         putMaster(body.rec);
         return jsonOut({ ok: true });
       case "putMasterBatch":
         return jsonOut({ ok: true, storeIds: putMasterBatch(body) });
       case "deleteMastersByFile":
-        return jsonOut({ ok: true, removed: deleteMastersByFile(body.srcFile, body.month) });
+        return jsonOut({ ok: true, removed: deleteMastersByFile(body.srcFile, body.month, body.brandId) });
       default:
         return jsonOut({ error: "unknown action: " + body.action });
     }
@@ -84,15 +104,27 @@ function doPost(e) {
 }
 
 /* ---------- 讀取 ---------- */
+// 品牌資料若分散在不同試算表（見 BRAND_SPREADSHEET_IDS），要把每一份試算表的同名分頁都讀出來、合併成一份，
+// 前端才會看到跟以前一樣「所有品牌混在一起」的完整清單——這一層合併是後端內部處理，前端完全不用改
+var ALL_BRAND_SCAN_IDS = function () { return [""].concat(Object.keys(BRAND_SPREADSHEET_IDS)); }; // ""=主試算表
+
 function getAll() {
   var db = {};
-  TABS.forEach(function (tab) { db[tab] = readTab(tab); });
-  db.mastersIndex = mastersIndex(); // 主檔只回傳「哪些店有檔」的輕量索引，實際內容用 getMaster 單獨抓
+  db.brands = readTab("brands", ""); // 品牌清單全平台共用，只在主試算表
+  TABS.forEach(function (tab) {
+    if (tab === "brands") return;
+    var merged = [];
+    ALL_BRAND_SCAN_IDS().forEach(function (bid) { merged = merged.concat(readTab(tab, bid)); });
+    db[tab] = merged;
+  });
+  var mergedMasters = [];
+  ALL_BRAND_SCAN_IDS().forEach(function (bid) { mergedMasters = mergedMasters.concat(mastersIndex(bid)); });
+  db.mastersIndex = mergedMasters; // 主檔只回傳「哪些店有檔」的輕量索引，實際內容用 getMaster 單獨抓
   return db;
 }
 
-function readTab(tab) {
-  var sh = sheet(tab);
+function readTab(tab, brandId) {
+  var sh = sheet(tab, brandId);
   var values = sh.getDataRange().getValues();
   if (values.length < 2) return [];
   var headers = values[0];
@@ -113,8 +145,32 @@ function readTab(tab) {
 }
 
 /* ---------- 寫入 ---------- */
+// 整批覆蓋分頁：rows 是全平台（全部品牌混在一起）的最終清單，依每列的 brandId 分流到該品牌實際存放的
+// 試算表，同一份試算表若有多個品牌共用（沒特別設定 BRAND_SPREADSHEET_IDS 的品牌都共用主試算表），
+// 要合併成一次 clear+寫入，不能各品牌分開呼叫，否則後面的品牌會把前面品牌剛寫好的資料整頁清掉。
 function replaceTab(tab, rows) {
-  var sh = sheet(tab);
+  rows = rows || [];
+  if (tab === "brands") { replaceTabInSheet(sheet("brands", ""), rows); return; }
+  var buckets = {}; // key: 解析出來的試算表 id，value: {ss, rows:[]}
+  var bucketFor = function (brandId) {
+    var ss = getSpreadsheetForBrand(brandId);
+    var key = ss.getId();
+    if (!buckets[key]) buckets[key] = { ss: ss, rows: [] };
+    return buckets[key];
+  };
+  rows.forEach(function (r) { bucketFor(r.brandId || "").rows.push(r); });
+  // 即使某個有專屬試算表的品牌這次完全沒有列（該表在該品牌是空的），也要確保它被清空，不留舊資料
+  Object.keys(BRAND_SPREADSHEET_IDS).forEach(function (bid) { bucketFor(bid); });
+  Object.keys(buckets).forEach(function (key) {
+    var b = buckets[key];
+    var real = SHEET_NAMES[tab] || tab;
+    var sh = b.ss.getSheetByName(real);
+    if (!sh) sh = b.ss.insertSheet(real);
+    replaceTabInSheet(sh, b.rows);
+  });
+}
+
+function replaceTabInSheet(sh, rows) {
   sh.clear();
   if (!rows || rows.length === 0) return;
   var headers = collectHeaders(rows);
@@ -125,8 +181,10 @@ function replaceTab(tab, rows) {
   range.setValues(out);
 }
 
-function appendRow(tab, row) {
-  var sh = sheet(tab);
+// brandId 沒有明確傳入時，退回用 row.brandId 判斷該去哪份試算表（records/uploads 這類本來就帶 brandId 的資料，
+// 前端呼叫端不用特別多傳一個參數）
+function appendRow(tab, row, brandId) {
+  var sh = sheet(tab, brandId != null ? brandId : row.brandId);
   var values = sh.getDataRange().getValues();
   var headers = (values.length && values[0].join("") !== "") ? values[0] : null;
   if (!headers) {
@@ -145,8 +203,8 @@ function appendRow(tab, row) {
 // 供 Layout圖／盤點總表這類「上傳當下就要立刻確定成功寫入」的場景使用：這兩種資料改用這個直接 upsert，
 // 不再跟其他維護類資料一起走防抖批次同步——批次同步是多個分頁平行送出，其中一個失敗會讓整批都沒寫入，
 // 且失敗後又悄悄放行下一次自動刷新，刷新抓到的舊資料會把前端剛顯示的「已上傳」蓋回「尚未上傳」。
-function upsertRow(tab, keyFields, row) {
-  var sh = sheet(tab);
+function upsertRow(tab, keyFields, row, brandId) {
+  var sh = sheet(tab, brandId != null ? brandId : row.brandId);
   var values = sh.getDataRange().getValues();
   var headers = (values.length && values[0].join("") !== "") ? values[0] : null;
   if (!headers) {
@@ -176,8 +234,8 @@ function upsertRow(tab, keyFields, row) {
 }
 
 // 依 keyFields 找出符合的那一列並整列刪除（盤點作業紀錄「刪除」用）。找不到就當作已經沒有這筆，視為成功。
-function deleteRow(tab, keyFields, keyValues) {
-  var sh = sheet(tab);
+function deleteRow(tab, keyFields, keyValues, brandId) {
+  var sh = sheet(tab, brandId != null ? brandId : keyValues.brandId);
   var values = sh.getDataRange().getValues();
   if (values.length < 2) return { ok: true };
   var headers = values[0];
@@ -281,7 +339,7 @@ function zipFiles(files, zipName, asLayoutPdf) {
     if (!id) return;
     var blob, fname;
     if (asLayoutPdf) {
-      var override = getLayoutOverride(f.storeId, f.month);
+      var override = getLayoutOverride(f.storeId, f.month, f.brandId);
       var effectiveRange = (override && override.range) ? override.range : f.printRange;
       blob = layoutExcelToPdf(id, effectiveRange, override && override.sheetName);
       fname = String(f.fileName || blob.getName()).replace(/\.(xlsx|xls)$/i, "") + ".pdf";
@@ -298,9 +356,9 @@ function zipFiles(files, zipName, asLayoutPdf) {
 
 // 查詢某店某月份有沒有手動指定的轉檔例外設定（分頁名稱／列印範圍），沒有回傳 null。
 // sheetName/range 任一為空字串都視為「這項沒設定」，呼叫端會用該項原本的值。
-function getLayoutOverride(storeId, month) {
+function getLayoutOverride(storeId, month, brandId) {
   if (!storeId || !month) return null;
-  var rows = readTab("layoutOverrides");
+  var rows = readTab("layoutOverrides", brandId);
   for (var i = 0; i < rows.length; i++) {
     var r = rows[i];
     if (String(r.storeId) === String(storeId) && String(r.month) === String(month)) {
@@ -397,10 +455,10 @@ function layoutExcelToPdf(fileId, printRange, sheetNameOverride) {
 }
 
 // 單張 Layout PDF 下載：把指定 Drive Excel 轉成 PDF，回傳 base64。轉檔前先查該店該月份有沒有手動例外設定。
-function layoutPdf(fileUrl, fileName, printRange, storeId, month) {
+function layoutPdf(fileUrl, fileName, printRange, storeId, month, brandId) {
   var id = extractDriveId(fileUrl);
   if (!id) return { error: "找不到檔案" };
-  var override = getLayoutOverride(storeId, month);
+  var override = getLayoutOverride(storeId, month, brandId);
   var effectiveRange = (override && override.range) ? override.range : printRange;
   var pdf = layoutExcelToPdf(id, effectiveRange, override && override.sheetName);
   var name = String(fileName || "layout").replace(/\.(xlsx|xls)$/i, "") + ".pdf";
@@ -414,8 +472,8 @@ function layoutPdf(fileUrl, fileName, printRange, storeId, month) {
  */
 var MASTER_INDEX_HEADERS = ["storeId", "month", "type", "sheet", "srcDate", "srcFile"];
 
-function masterIndexSheet() {
-  var sh = sheet("masters");
+function masterIndexSheet(brandId) {
+  var sh = sheet("masters", brandId);
   var v = sh.getDataRange().getValues();
   if (v.length === 0 || v[0].join("") === "") {
     var hr = sh.getRange(1, 1, 1, MASTER_INDEX_HEADERS.length);
@@ -424,8 +482,8 @@ function masterIndexSheet() {
   return sh;
 }
 
-function mastersIndex() {
-  var sh = masterIndexSheet();
+function mastersIndex(brandId) {
+  var sh = masterIndexSheet(brandId);
   var v = sh.getDataRange().getValues();
   var out = [];
   for (var i = 1; i < v.length; i++) {
@@ -448,8 +506,8 @@ function wideSheetName(srcFile, month, type) {
 }
 
 // 主檔索引 upsert：同 storeId+month+type 已存在就更新指向的分頁，不存在就新增一列
-function upsertMasterIndex(storeId, month, type, sheetName, srcDate, srcFile) {
-  var sh = masterIndexSheet();
+function upsertMasterIndex(storeId, month, type, sheetName, srcDate, srcFile, brandId) {
+  var sh = masterIndexSheet(brandId);
   var v = sh.getDataRange().getValues();
   for (var i = 1; i < v.length; i++) {
     if (String(v[i][0]) === String(storeId) && String(v[i][1]) === String(month) && String(v[i][2]) === String(type)) {
@@ -463,15 +521,15 @@ function upsertMasterIndex(storeId, month, type, sheetName, srcDate, srcFile) {
 
 // 讀取單一店鋪主檔／庫存檔。庫存檔存成「寬表」(商品固定欄+每店一欄數量，多店共用一份分頁)，
 // 這裡會自動判斷：分頁表頭若找得到 storeId 這個欄位，代表是寬表，重組成標準 6 欄；否則照舊格式直接讀（主檔/舊資料）。
-function getMaster(storeId, month, type) {
-  var sh = masterIndexSheet();
+function getMaster(storeId, month, type, brandId) {
+  var sh = masterIndexSheet(brandId);
   var v = sh.getDataRange().getValues();
   var name = null;
   for (var i = 1; i < v.length; i++) {
     if (String(v[i][0]) === String(storeId) && String(v[i][1]) === String(month) && String(v[i][2]) === String(type)) { name = v[i][3]; break; }
   }
   if (!name) return null;
-  var ds = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(name);
+  var ds = getSpreadsheetForBrand(brandId).getSheetByName(name);
   if (!ds) return null;
   var dv = ds.getDataRange().getValues();
   if (dv.length < 1) return { columns: [], rows: [] };
@@ -503,7 +561,7 @@ function getMaster(storeId, month, type) {
 // 寫入主檔（歐聖以外品牌／歐聖主檔，一份=一個店鋪或一個種類，非寬表）
 function putMaster(rec) {
   var name = dataSheetName(rec.storeId, rec.month, rec.type);
-  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var ss = getSpreadsheetForBrand(rec.brandId);
   var ds = ss.getSheetByName(name);
   if (!ds) ds = ss.insertSheet(name); else ds.clear();
   var cols = rec.columns || [];
@@ -514,7 +572,7 @@ function putMaster(rec) {
     var rg = ds.getRange(1, 1, out.length, cols.length);
     rg.setNumberFormat("@"); rg.setValues(out);
   }
-  upsertMasterIndex(rec.storeId, rec.month, rec.type, name, rec.srcDate, rec.srcFile);
+  upsertMasterIndex(rec.storeId, rec.month, rec.type, name, rec.srcDate, rec.srcFile, rec.brandId);
 }
 
 // 批次寫入多店鋪庫存檔（歐聖寬表用）：一次上傳只建「一份」分頁——商品固定欄(商品編號/barcode/舊商品編號2/
@@ -529,7 +587,7 @@ function putMasterBatch(payload) {
   var append = !!payload.append;
   var storeIds = stores.map(function (st) { return st.storeId; });
   var name = wideSheetName(payload.srcFile, payload.month, payload.type);
-  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var ss = getSpreadsheetForBrand(payload.brandId);
   var ds = ss.getSheetByName(name);
   var headers = ["商品編號", "barcode", "舊商品編號2", "物品名稱", "品項平均成本"].concat(storeIds);
 
@@ -550,7 +608,7 @@ function putMasterBatch(payload) {
   rg.setNumberFormat("@"); rg.setValues(out);
 
   if (!append) {
-    storeIds.forEach(function (sid) { upsertMasterIndex(sid, payload.month, payload.type, name, payload.srcDate, payload.srcFile); });
+    storeIds.forEach(function (sid) { upsertMasterIndex(sid, payload.month, payload.type, name, payload.srcDate, payload.srcFile, payload.brandId); });
   }
   return storeIds;
 }
@@ -634,13 +692,13 @@ function migrateStockToWideFormat() {
 
 // 依來源檔名刪除主檔（同檔名重新上傳前先清空舊產出）
 // 庫存檔為寬表，同一次上傳的多家店索引列會指向同一份分頁，用 deletedSheets 避免重複刪除同一份分頁時報錯
-function deleteMastersByFile(srcFile, month) {
-  var sh = masterIndexSheet();
+function deleteMastersByFile(srcFile, month, brandId) {
+  var sh = masterIndexSheet(brandId);
   var v = sh.getDataRange().getValues();
   if (v.length < 2) return 0;
   var header = v[0];
   var keep = [header]; var removed = 0;
-  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var ss = getSpreadsheetForBrand(brandId);
   var deletedSheets = {};
   for (var i = 1; i < v.length; i++) {
     var row = v[i];
@@ -681,9 +739,11 @@ function toLine(row, headers) {
   });
 }
 
-function sheet(name) {
+// brandId 用來決定去哪一份試算表找分頁；"brands"（品牌清單本身）是全平台共用的參照資料，
+// 不分品牌，一律留在主試算表，不受 BRAND_SPREADSHEET_IDS 影響
+function sheet(name, brandId) {
   var real = SHEET_NAMES[name] || name; // 英文代碼 → 中文分頁名
-  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var ss = (name === "brands") ? SpreadsheetApp.getActiveSpreadsheet() : getSpreadsheetForBrand(brandId);
   var sh = ss.getSheetByName(real);
   if (!sh) sh = ss.insertSheet(real);
   return sh;
@@ -777,9 +837,11 @@ function cleanupTestUploads() {
 function cleanupOrphanFiles() {
   var referenced = {};
   ["layouts", "countTotals"].forEach(function (tab) {
-    readTab(tab).forEach(function (r) {
-      var id = extractDriveId(r.fileUrl);
-      if (id) referenced[id] = true;
+    ALL_BRAND_SCAN_IDS().forEach(function (bid) { // 各品牌可能分散在不同試算表，都要查，不然會誤判成孤兒
+      readTab(tab, bid).forEach(function (r) {
+        var id = extractDriveId(r.fileUrl);
+        if (id) referenced[id] = true;
+      });
     });
   });
 
@@ -803,4 +865,117 @@ function cleanupOrphanFiles() {
   }
   Logger.log("已刪除 " + removed.length + " 個孤兒檔案：\n" + removed.join("\n"));
   return removed;
+}
+
+/* ============================================================
+ * 一次性設定：幫「英斯伯」「歐都納」各建立一份專屬的新試算表（歐聖資料留在原位，不用搬）。
+ * 用法：
+ *   1. 在 Apps Script 編輯器上方函式清單選「setupBrandSpreadsheets」→ 按 ▶ 執行
+ *   2. 打開執行記錄，把印出的兩行貼進上面的 BRAND_SPREADSHEET_IDS，存檔
+ *   3. 執行一次「migrateBrandDataToOwnSpreadsheets」，把這兩個品牌現有的資料搬過去
+ *   4. Deploy → Manage deployments → Edit → New version，部署新版本
+ * 品牌名稱要跟「品牌管理」畫面上顯示的完全一致，才能正確查到品牌 id；查不到會在執行記錄裡說明。
+ * ============================================================ */
+function setupBrandSpreadsheets() {
+  var targetNames = ["英斯伯", "歐都納"];
+  var brands = readTab("brands", "");
+  targetNames.forEach(function (name) {
+    var b = brands.filter(function (x) { return x.name === name; })[0];
+    if (!b) { Logger.log("找不到品牌「" + name + "」，請確認「品牌管理」畫面上的名稱是否完全一致（含全半角、空白）。"); return; }
+    if (BRAND_SPREADSHEET_IDS[b.id]) { Logger.log(name + "（id=" + b.id + "）已經設定過試算表，略過。目前設定：" + BRAND_SPREADSHEET_IDS[b.id]); return; }
+    var ss = SpreadsheetApp.create("日翊外盤平台-" + name);
+    Logger.log(name + "（id=" + b.id + "）新試算表已建立：" + ss.getUrl()
+      + "\n→ 請把這行加進 BRAND_SPREADSHEET_IDS：\n\"" + b.id + "\": \"" + ss.getId() + "\",");
+  });
+}
+
+/* ============================================================
+ * 一次性搬移：把 BRAND_SPREADSHEET_IDS 裡設定的品牌，現有散落在主試算表的資料搬到各自的新試算表。
+ * 用法：先執行過 setupBrandSpreadsheets 並把印出的設定貼進 BRAND_SPREADSHEET_IDS、存檔後，
+ *      在 Apps Script 編輯器上方函式清單選「migrateBrandDataToOwnSpreadsheets」→ 按 ▶ 執行。
+ * 作法（每個品牌都是「先複製到新試算表確定成功 → 再從主試算表刪除」，不會兩邊資料同時消失）：
+ *   - stores/staff/prices/records/uploads/aliases/categoryAliases/manuals/opsMargins：靠每列的 brandId 欄位判斷
+ *   - layouts/countTotals/layoutOverrides：這三個分頁本身沒有 brandId 欄位，改用 storeId 反查該店屬於哪個品牌
+ *     （用搬移前、主試算表當下的店鋪名單反查，所以要在還沒搬 stores 之前就先讀好對照表）
+ *   - 主檔／庫存檔（D_.../W_... 資料分頁）：用店鋪名單反查後，整份分頁複製到新試算表，索引也一起搬過去
+ * 品牌若目前完全沒有資料（例如還沒開始用），執行後看到「搬移結果：{}」是正常的，代表沒東西要搬。
+ * ============================================================ */
+function migrateBrandDataToOwnSpreadsheets() {
+  var brandIds = Object.keys(BRAND_SPREADSHEET_IDS);
+  if (brandIds.length === 0) { Logger.log("BRAND_SPREADSHEET_IDS 目前是空的，沒有品牌需要搬。"); return; }
+
+  var allStores = readTab("stores", ""); // 搬移前、主試算表當下的店鋪名單，用來反查沒有 brandId 欄位的分頁
+  var storeToBrand = {};
+  allStores.forEach(function (s) { storeToBrand[s.id] = s.brandId; });
+  var brandNames = {};
+  readTab("brands", "").forEach(function (b) { brandNames[b.id] = b.name; });
+
+  var directBrandTabs = ["stores", "staff", "prices", "records", "uploads", "aliases", "categoryAliases", "manuals", "opsMargins"];
+  var storeLookupTabs = ["layouts", "countTotals", "layoutOverrides"];
+
+  brandIds.forEach(function (bid) {
+    var label = brandNames[bid] || bid;
+    Logger.log("開始搬「" + label + "」的資料…");
+    var movedCounts = {};
+
+    directBrandTabs.forEach(function (tab) {
+      var rows = readTab(tab, "");
+      var mine = rows.filter(function (r) { return r.brandId === bid; });
+      if (mine.length === 0) return;
+      replaceTabInSheet(sheet(tab, bid), mine);
+      replaceTabInSheet(sheet(tab, ""), rows.filter(function (r) { return r.brandId !== bid; }));
+      movedCounts[tab] = mine.length;
+    });
+
+    storeLookupTabs.forEach(function (tab) {
+      var rows = readTab(tab, "");
+      var mine = rows.filter(function (r) { return storeToBrand[r.storeId] === bid; });
+      if (mine.length === 0) return;
+      replaceTabInSheet(sheet(tab, bid), mine);
+      replaceTabInSheet(sheet(tab, ""), rows.filter(function (r) { return storeToBrand[r.storeId] !== bid; }));
+      movedCounts[tab] = mine.length;
+    });
+
+    // 主檔／庫存檔：整份資料分頁複製過去，確定成功才刪主試算表這邊的分頁與索引列
+    var mainIdxSheet = masterIndexSheet("");
+    var idxVals = mainIdxSheet.getDataRange().getValues();
+    if (idxVals.length > 1) {
+      var idxHeader = idxVals[0];
+      var mineIdxRows = [], remainIdxRows = [idxHeader], sheetNamesToMove = {};
+      for (var i = 1; i < idxVals.length; i++) {
+        var row = idxVals[i];
+        if (String(row[0]) === "") continue;
+        if (storeToBrand[row[0]] === bid) { mineIdxRows.push(row); sheetNamesToMove[row[3]] = true; }
+        else remainIdxRows.push(row);
+      }
+      if (mineIdxRows.length > 0) {
+        var mainSs = SpreadsheetApp.getActiveSpreadsheet();
+        var targetSs = getSpreadsheetForBrand(bid);
+        Object.keys(sheetNamesToMove).forEach(function (nm) {
+          var srcSheet = mainSs.getSheetByName(nm);
+          if (srcSheet && !targetSs.getSheetByName(nm)) { srcSheet.copyTo(targetSs).setName(nm); }
+        });
+        var targetIdxSheet = masterIndexSheet(bid);
+        var targetVals = targetIdxSheet.getDataRange().getValues();
+        var targetHasHeader = targetVals.length > 0 && targetVals[0].join("") !== "";
+        var targetOut = (targetHasHeader ? targetVals : [idxHeader]).concat(mineIdxRows);
+        targetIdxSheet.clear();
+        var rgT = targetIdxSheet.getRange(1, 1, targetOut.length, idxHeader.length);
+        rgT.setNumberFormat("@"); rgT.setValues(targetOut);
+
+        mainIdxSheet.clear();
+        var rgM = mainIdxSheet.getRange(1, 1, remainIdxRows.length, idxHeader.length);
+        rgM.setNumberFormat("@"); rgM.setValues(remainIdxRows);
+
+        Object.keys(sheetNamesToMove).forEach(function (nm) {
+          var srcSheet = mainSs.getSheetByName(nm);
+          if (srcSheet) { try { mainSs.deleteSheet(srcSheet); } catch (e) {} }
+        });
+        movedCounts["主檔/庫存檔索引"] = mineIdxRows.length;
+      }
+    }
+
+    Logger.log(label + " 搬移結果：" + JSON.stringify(movedCounts));
+  });
+  Logger.log("全部完成。建議手動打開新試算表確認內容正確後，這兩個一次性函式（setupBrandSpreadsheets／migrateBrandDataToOwnSpreadsheets）就可以刪除了。");
 }

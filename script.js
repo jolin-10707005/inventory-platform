@@ -377,7 +377,7 @@ async function bulkDownloadFiles(list, zipBaseName, toast, asLayoutPdf) {
   if (list.length === 0) { toast("本月尚無已上傳的檔案"); return; }
   if (InventoryAPI.cloud()) {
     try {
-      const z = await InventoryAPI.zipFiles(list.map((l) => ({ fileUrl: l.fileUrl, fileName: l.fileName, printRange: l.printRange, storeId: l.storeId, month: l.month })), zipBaseName, asLayoutPdf);
+      const z = await InventoryAPI.zipFiles(list.map((l) => ({ fileUrl: l.fileUrl, fileName: l.fileName, printRange: l.printRange, storeId: l.storeId, month: l.month, brandId: l.brandId })), zipBaseName, asLayoutPdf);
       if (z) { downloadBase64Zip(z.filename, z.base64); toast(`已下載本月 ${list.length} 份檔案（zip）✔`); return; }
     } catch (err) { toast("打包下載失敗，請確認網路後再試"); return; }
   }
@@ -514,7 +514,7 @@ function DownloadZone({ db, month, setMonth, toast }) {
     const namePart = type === "master" && osheng ? (store.category || store.name) : store.name;
     setBusy(store.id + type);
     try {
-      const m = await InventoryAPI.getMaster(key, month, type);
+      const m = await InventoryAPI.getMaster(key, month, type, brandId);
       if (!m || !m.columns || m.columns.length === 0) { toast(`查無此${label}，請重新整理或請管理者上傳`); return; }
       const rows = m.rows.map((r) => m.columns.map((c) => (r[c] == null ? "" : r[c])));
       let filename;
@@ -699,7 +699,7 @@ function CountUploadZone({ db, setDB, month, setMonth, toast }) {
     (async () => {
       const pairs = await Promise.all(subCandidates.map(async (s) => {
         try {
-          const m = await InventoryAPI.getMaster(s.id, month, "stock");
+          const m = await InventoryAPI.getMaster(s.id, month, "stock", brandId);
           const total = (m && m.rows) ? m.rows.reduce((a, r) => a + num(r[QTY_COL]), 0) : 0;
           return [s.id, total];
         } catch (e) { return [s.id, 0]; }
@@ -723,7 +723,7 @@ function CountUploadZone({ db, setDB, month, setMonth, toast }) {
 
   // 本月總表下載：一店一檔，不合併，交由伺服器端打包成 zip（或本機模式依序下載）
   const downloadAllCounts = async () => {
-    const raw = (db.countTotals || []).filter((c) => c.month === month && db.stores.some((s) => s.id === c.storeId && s.brandId === brandId));
+    const raw = (db.countTotals || []).filter((c) => c.month === month && db.stores.some((s) => s.id === c.storeId && s.brandId === brandId)).map((c) => ({ ...c, brandId }));
     const list = assignZipFolders(raw, (storeId) => db.stores.find((s) => s.id === storeId));
     setDownloadingAll(true);
     try { await bulkDownloadFiles(list, `${brand ? brand.name : ""}盤點總表_${month}`, toast); }
@@ -748,7 +748,7 @@ function CountUploadZone({ db, setDB, month, setMonth, toast }) {
         // （例如貼到別家店的底稿、或庫存檔後來又重新上傳過），擋下上傳避免後續差異金額算錯
         const stockTotalInSheet = findLabeledTotal(aoa, STOCK_TOTAL_LABEL);
         if (stockTotalInSheet != null) {
-          const stockMaster = await InventoryAPI.getMaster(store.id, month, "stock");
+          const stockMaster = await InventoryAPI.getMaster(store.id, month, "stock", brandId);
           if (stockMaster && stockMaster.rows && stockMaster.rows.length > 0) {
             const systemStockTotal = stockMaster.rows.reduce((a, r) => a + num(r[QTY_COL]), 0);
             if (systemStockTotal !== stockTotalInSheet) {
@@ -760,7 +760,7 @@ function CountUploadZone({ db, setDB, month, setMonth, toast }) {
 
         const url = await InventoryAPI.uploadCountSheet(reader.result, f.name, brand ? brand.name : "");
         const rec = { storeId: store.id, month, fileName: f.name, fileUrl: url, total, uploadedAt: new Date().toISOString().slice(0, 10) };
-        await InventoryAPI.upsertRow("countTotals", ["storeId", "month"], rec); // 上傳當下就直接確定寫入 Sheet，不靠背景批次同步
+        await InventoryAPI.upsertRow("countTotals", ["storeId", "month"], rec, brandId); // 上傳當下就直接確定寫入 Sheet，不靠背景批次同步
         setDB((d) => ({ ...d, countTotals: [...(d.countTotals || []).filter((c) => !(c.storeId === store.id && c.month === month)), rec] }));
         if (prevUrl && prevUrl !== url) InventoryAPI.deleteFile(prevUrl).catch(() => {});
         toast(total == null
@@ -894,7 +894,7 @@ function LayoutZone({ db, setDB, month, setMonth, toast }) {
     const rec = { storeId: store.id, month, sheetName: overrideForm.sheetName, range: overrideForm.range.trim() };
     setOverrideBusy(true);
     try {
-      await InventoryAPI.upsertRow("layoutOverrides", ["storeId", "month"], rec);
+      await InventoryAPI.upsertRow("layoutOverrides", ["storeId", "month"], rec, brandId);
       setDB((d) => ({ ...d, layoutOverrides: [...(d.layoutOverrides || []).filter((o) => !(o.storeId === store.id && o.month === month)), rec] }));
       toast(`已套用「${store.name}」轉檔設定 ✔`);
       setOverrideStoreId("");
@@ -907,7 +907,7 @@ function LayoutZone({ db, setDB, month, setMonth, toast }) {
     const rec = { storeId: store.id, month, sheetName: "", range: "" };
     setOverrideBusy(true);
     try {
-      await InventoryAPI.upsertRow("layoutOverrides", ["storeId", "month"], rec);
+      await InventoryAPI.upsertRow("layoutOverrides", ["storeId", "month"], rec, brandId);
       setDB((d) => ({ ...d, layoutOverrides: [...(d.layoutOverrides || []).filter((o) => !(o.storeId === store.id && o.month === month)), rec] }));
       toast(`已清除「${store.name}」轉檔設定`);
       setOverrideStoreId("");
@@ -934,7 +934,7 @@ function LayoutZone({ db, setDB, month, setMonth, toast }) {
         const printRange = await readLayoutPrintRange(f);
         const url = await InventoryAPI.uploadLayout(reader.result, f.name, brand ? brand.name : "");
         const rec = { storeId: store.id, month, fileName: f.name, fileUrl: url, printRange: printRange || "", uploadedAt: new Date().toISOString().slice(0, 10) };
-        await InventoryAPI.upsertRow("layouts", ["storeId", "month"], rec); // 上傳當下就直接確定寫入 Sheet，不靠背景批次同步
+        await InventoryAPI.upsertRow("layouts", ["storeId", "month"], rec, brandId); // 上傳當下就直接確定寫入 Sheet，不靠背景批次同步
         setDB((d) => ({ ...d, layouts: [...(d.layouts || []).filter((l) => !(l.storeId === store.id && l.month === month)), rec] }));
         if (prevUrl && prevUrl !== url) InventoryAPI.deleteFile(prevUrl).catch(() => {});
         toast(`已上傳「${store.name}」Layout 圖 ✔`);
@@ -959,7 +959,7 @@ function LayoutZone({ db, setDB, month, setMonth, toast }) {
   const downloadOne = async (store, l) => {
     setDlBusy(store.id);
     try {
-      const pdf = await InventoryAPI.layoutPdf(l.fileUrl, l.fileName, l.printRange, store.id, month);
+      const pdf = await InventoryAPI.layoutPdf(l.fileUrl, l.fileName, l.printRange, store.id, month, brandId);
       if (pdf) {
         downloadBase64File(pdf.filename, pdf.base64, "application/pdf");
         toast(`已下載「${store.name}」Layout 圖（PDF）✔`);
@@ -977,7 +977,7 @@ function LayoutZone({ db, setDB, month, setMonth, toast }) {
   // 本月Layout圖下載：一店一檔，不合併；交由伺服器端打包成 zip（本機模式依序下載原檔）。
   // asPdf=true 時伺服器會先把每張 Excel 轉成 PDF 再打包；asPdf=false 直接打包原始 Excel 檔。
   const downloadAll = (asPdf) => async () => {
-    const raw = (db.layouts || []).filter((l) => l.month === month && db.stores.some((s) => s.id === l.storeId && s.brandId === brandId));
+    const raw = (db.layouts || []).filter((l) => l.month === month && db.stores.some((s) => s.id === l.storeId && s.brandId === brandId)).map((l) => ({ ...l, brandId }));
     const list = assignZipFolders(raw, (storeId) => db.stores.find((s) => s.id === storeId));
     setDownloadingAll(asPdf ? "pdf" : "excel");
     try { await bulkDownloadFiles(list, `${brand ? brand.name : ""}Layout圖_${month}${asPdf ? "(PDF)" : "(Excel)"}`, toast, asPdf); }
@@ -1214,7 +1214,7 @@ function FillZone({ db, setDB, month, setMonth, toast }) {
       if (editingId) {
         const next = { ...db, records: db.records.map((r) => (r.id === editingId ? rec : r)) };
         setDB(next);
-        await InventoryAPI.upsertRow("records", ["id"], rec);
+        await InventoryAPI.upsertRow("records", ["id"], rec, rec.brandId);
       } else {
         const next = { ...db, records: [...db.records, rec] };
         setDB(next);
@@ -1246,7 +1246,7 @@ function FillZone({ db, setDB, month, setMonth, toast }) {
   const onDeleteRecord = async (r) => {
     if (!window.confirm(`確定要刪除「${r.storeName}」${r.date} 這筆盤點作業紀錄嗎？`)) return;
     try {
-      await InventoryAPI.deleteRow("records", ["id"], { id: r.id });
+      await InventoryAPI.deleteRow("records", ["id"], { id: r.id }, r.brandId);
       setDB((d) => ({ ...d, records: d.records.filter((x) => x.id !== r.id) }));
       if (editingId === r.id) cancelEdit();
       toast("已刪除該筆紀錄");
@@ -1637,9 +1637,9 @@ function UploadZone({ db, setDB, month, toast, brandId }) {
     }
     if (datasets.length === 0) { toast("沒有可對應的店鋪，請確認切分欄與名單"); return; }
     const srcDate = parseDateFromName(file.name);
-    await InventoryAPI.deleteMastersByFile(file.name, month); // 同檔名先清空舊產出
+    await InventoryAPI.deleteMastersByFile(file.name, month, brandId); // 同檔名先清空舊產出
     const addedIdx = [];
-    for (const d of datasets) { await InventoryAPI.putMaster({ storeId: d.storeId, month, type: fileType, srcDate, srcFile: file.name, columns: MASTER_COLS, rows: d.rows }); addedIdx.push({ storeId: d.storeId, month, type: fileType }); }
+    for (const d of datasets) { await InventoryAPI.putMaster({ storeId: d.storeId, month, type: fileType, srcDate, srcFile: file.name, brandId, columns: MASTER_COLS, rows: d.rows }); addedIdx.push({ storeId: d.storeId, month, type: fileType }); }
     await finalize(addedIdx, datasets.length, unmatched, label);
   };
 
@@ -1681,9 +1681,9 @@ function UploadZone({ db, setDB, month, toast, brandId }) {
       storeCols.forEach((h) => { const cat = colCat[h]; if (cat) cats.add(cat); });
       if (cats.size === 0) { toast("找不到店鋪種類：請在下方為店名欄選擇對應種類"); return; }
       const srcDate = parseDateFromName(file.name);
-      await InventoryAPI.deleteMastersByFile(file.name, month); // 同檔名先清空舊產出
+      await InventoryAPI.deleteMastersByFile(file.name, month, brandId); // 同檔名先清空舊產出
       const addedIdx = [];
-      for (const cat of cats) { await InventoryAPI.putMaster({ storeId: "CAT::" + cat, month, type: "master", srcDate, srcFile: file.name, columns: MASTER_COLS, rows }); addedIdx.push({ storeId: "CAT::" + cat, month, type: "master" }); }
+      for (const cat of cats) { await InventoryAPI.putMaster({ storeId: "CAT::" + cat, month, type: "master", srcDate, srcFile: file.name, brandId, columns: MASTER_COLS, rows }); addedIdx.push({ storeId: "CAT::" + cat, month, type: "master" }); }
       await finalize(addedIdx, cats.size, [], `主檔（種類：${Array.from(cats).join("、")}）`, [], learnCategoryAliases());
     } else {
       // 庫存檔：每個店名/倉別欄各一份，數量帶該欄（先驗證整數）
@@ -1716,8 +1716,8 @@ function UploadZone({ db, setDB, month, toast, brandId }) {
       if (batchStores.length === 0) { toast("尚未對應任何店鋪，請在下方為店名欄選擇對應店鋪"); return; }
 
       const srcDate = parseDateFromName(file.name);
-      await InventoryAPI.deleteMastersByFile(file.name, month); // 同檔名先清空舊產出
-      const addedStoreIds = await InventoryAPI.putMasterBatch({ month, type: "stock", srcDate, srcFile: file.name, baseRows, stores: batchStores });
+      await InventoryAPI.deleteMastersByFile(file.name, month, brandId); // 同檔名先清空舊產出
+      const addedStoreIds = await InventoryAPI.putMasterBatch({ month, type: "stock", srcDate, srcFile: file.name, brandId, baseRows, stores: batchStores });
       const addedIdx = addedStoreIds.map((sid) => ({ storeId: sid, month, type: "stock" }));
       await finalize(addedIdx, addedStoreIds.length, unmatched, "庫存檔", learnAliases());
     }
@@ -1742,7 +1742,7 @@ function UploadZone({ db, setDB, month, toast, brandId }) {
     if (!confirm(`確定要刪除「${u.fileName}」這筆上傳，以及它已產製的主檔／庫存檔嗎？`)) return;
     setRemoving(u.id);
     try {
-      await InventoryAPI.deleteMastersByFile(u.fileName, u.month);
+      await InventoryAPI.deleteMastersByFile(u.fileName, u.month, u.brandId);
       const next = {
         ...db,
         uploads: db.uploads.filter((x) => x.id !== u.id),
