@@ -736,7 +736,8 @@ function BrandStoreSelect({
   month,
   onBrand,
   onStore,
-  showStore = true
+  showStore = true,
+  between
 }) {
   const stores = db.stores.filter(s => s.brandId === brandId && s.month === month);
   return /*#__PURE__*/React.createElement("div", {
@@ -750,7 +751,7 @@ function BrandStoreSelect({
   }, "— 請選擇品牌 —"), db.brands.map(b => /*#__PURE__*/React.createElement("option", {
     key: b.id,
     value: b.id
-  }, b.name))), showStore && /*#__PURE__*/React.createElement("select", {
+  }, b.name))), between, showStore && /*#__PURE__*/React.createElement("select", {
     value: storeId,
     onChange: e => onStore(e.target.value),
     disabled: !brandId,
@@ -2011,13 +2012,7 @@ function FillZone({
     className: "space-y-4"
   }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
     className: "flex flex-wrap gap-3 items-center"
-  }, /*#__PURE__*/React.createElement("input", {
-    type: "month",
-    value: month,
-    onChange: e => onMonthChange(e.target.value),
-    title: "盤點月份",
-    className: "px-3 py-2 border border-slate-300 rounded-lg text-sm bg-white focus:ring-2 focus:ring-blue-500 outline-none"
-  }), /*#__PURE__*/React.createElement(BrandStoreSelect, {
+  }, /*#__PURE__*/React.createElement(BrandStoreSelect, {
     db: db,
     brandId: form.brandId,
     storeId: form.storeId,
@@ -2031,7 +2026,14 @@ function FillZone({
       dept: "",
       filledBy: ""
     })),
-    onStore: onStore
+    onStore: onStore,
+    between: /*#__PURE__*/React.createElement("input", {
+      type: "month",
+      value: month,
+      onChange: e => onMonthChange(e.target.value),
+      title: "盤點月份",
+      className: "px-3 py-2 border border-slate-300 rounded-lg text-sm bg-white focus:ring-2 focus:ring-blue-500 outline-none"
+    })
   }), /*#__PURE__*/React.createElement("select", {
     value: form.dept,
     onChange: e => onDept(e.target.value),
@@ -3697,7 +3699,7 @@ function AnalysisZone({
     onClick: exportBilling,
     className: "px-5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-medium rounded-lg"
   }, "⬇ 匯出請款資料（Excel）"))), /*#__PURE__*/React.createElement("div", {
-    className: "grid grid-cols-2 md:grid-cols-4 gap-4 mt-5"
+    className: "grid grid-cols-1 md:grid-cols-3 gap-4 mt-5"
   }, /*#__PURE__*/React.createElement(Stat, {
     label: "盤點場次",
     value: viewRows.length,
@@ -3710,10 +3712,6 @@ function AnalysisZone({
     label: "總投入人時",
     value: totals.manHours.toLocaleString(),
     unit: "人時"
-  }), /*#__PURE__*/React.createElement(Stat, {
-    label: "請款總額",
-    value: totals.amount.toLocaleString(),
-    unit: "元"
   })), /*#__PURE__*/React.createElement("div", {
     className: "table-scroll mt-5"
   }, /*#__PURE__*/React.createElement("table", {
@@ -3736,11 +3734,7 @@ function AnalysisZone({
     className: "py-2 pr-4 text-right"
   }, "人時"), /*#__PURE__*/React.createElement("th", {
     className: "py-2 pr-4 text-right"
-  }, "盤點效率"), /*#__PURE__*/React.createElement("th", {
-    className: "py-2 pr-4"
-  }, "計價方式"), /*#__PURE__*/React.createElement("th", {
-    className: "py-2 pr-4 text-right"
-  }, "請款金額")), /*#__PURE__*/React.createElement("tr", {
+  }, "盤點效率")), /*#__PURE__*/React.createElement("tr", {
     className: "border-b"
   }, /*#__PURE__*/React.createElement("th", {
     className: "py-1 pr-4"
@@ -3767,7 +3761,7 @@ function AnalysisZone({
     onChange: v => setF("date", v),
     options: distinctVals(rows, "date")
   })), /*#__PURE__*/React.createElement("th", {
-    colSpan: "6"
+    colSpan: "4"
   }))), /*#__PURE__*/React.createElement("tbody", null, viewRows.map(r => /*#__PURE__*/React.createElement("tr", {
     key: r.id,
     className: "border-b last:border-0"
@@ -3787,12 +3781,8 @@ function AnalysisZone({
     className: "py-2 pr-4 text-right"
   }, r.manHours), /*#__PURE__*/React.createElement("td", {
     className: "py-2 pr-4 text-right"
-  }, r.efficiency.toLocaleString(), " 件/H/人"), /*#__PURE__*/React.createElement("td", {
-    className: "py-2 pr-4"
-  }, r.priceDesc), /*#__PURE__*/React.createElement("td", {
-    className: "py-2 pr-4 text-right font-semibold"
-  }, r.amount.toLocaleString(), " 元"))), viewRows.length === 0 && /*#__PURE__*/React.createElement("tr", null, /*#__PURE__*/React.createElement("td", {
-    colSpan: "10",
+  }, r.efficiency.toLocaleString(), " 件/H/人"))), viewRows.length === 0 && /*#__PURE__*/React.createElement("tr", null, /*#__PURE__*/React.createElement("td", {
+    colSpan: "8",
     className: "py-6 text-center text-slate-400"
   }, "查無符合條件的紀錄"))))));
 }
