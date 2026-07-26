@@ -1952,12 +1952,16 @@ function FillZone({
       filledBy: ""
     })),
     onStore: onStore
-  }), /*#__PURE__*/React.createElement("input", {
-    placeholder: "主責課",
+  }), /*#__PURE__*/React.createElement("select", {
     value: form.dept,
     onChange: e => onDept(e.target.value),
-    className: "px-3 py-2 border border-slate-300 rounded-lg text-sm w-28 focus:ring-2 focus:ring-blue-500 outline-none"
-  }), /*#__PURE__*/React.createElement("select", {
+    className: "px-3 py-2 border border-slate-300 rounded-lg text-sm bg-white focus:ring-2 focus:ring-blue-500 outline-none"
+  }, /*#__PURE__*/React.createElement("option", {
+    value: ""
+  }, "— 請選擇主責課 —"), distinctDepts(db.stores.filter(s => s.brandId === form.brandId && s.month === month), "dept").map(d => /*#__PURE__*/React.createElement("option", {
+    key: d,
+    value: d
+  }, d))), /*#__PURE__*/React.createElement("select", {
     value: form.filledBy,
     onChange: e => set("filledBy", e.target.value),
     className: "px-3 py-2 border border-slate-300 rounded-lg text-sm bg-white focus:ring-2 focus:ring-blue-500 outline-none"

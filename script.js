@@ -1237,8 +1237,11 @@ function FillZone({ db, setDB, month, setMonth, toast }) {
               <BrandStoreSelect db={db} brandId={form.brandId} storeId={form.storeId} month={month}
                 onBrand={(v) => setForm((f) => ({ ...f, brandId: v, storeId: "", date: "", headcount: "", dept: "", filledBy: "" }))}
                 onStore={onStore} />
-              <input placeholder="主責課" value={form.dept} onChange={(e) => onDept(e.target.value)}
-                className="px-3 py-2 border border-slate-300 rounded-lg text-sm w-28 focus:ring-2 focus:ring-blue-500 outline-none" />
+              <select value={form.dept} onChange={(e) => onDept(e.target.value)}
+                className="px-3 py-2 border border-slate-300 rounded-lg text-sm bg-white focus:ring-2 focus:ring-blue-500 outline-none">
+                <option value="">— 請選擇主責課 —</option>
+                {distinctDepts(db.stores.filter((s) => s.brandId === form.brandId && s.month === month), "dept").map((d) => <option key={d} value={d}>{d}</option>)}
+              </select>
               <select value={form.filledBy} onChange={(e) => set("filledBy", e.target.value)}
                 className="px-3 py-2 border border-slate-300 rounded-lg text-sm bg-white focus:ring-2 focus:ring-blue-500 outline-none">
                 <option value="">— 請選擇填寫人 —</option>
