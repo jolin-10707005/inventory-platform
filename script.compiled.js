@@ -206,17 +206,19 @@ const seedDB = {
   // Layout 圖：{ storeId, month, fileName, fileUrl, printRange, uploadedAt }（一店一份，只列主店不含分倉，原檔存 Drive；printRange 為上傳時從 Excel 讀出的實際列印範圍，如 "A1:Q33"）
   countTotals: [],
   // 盤點總表：{ storeId, month, fileName, fileUrl, total, uploadedAt }（一店一檔，原檔存 Drive，只擷取「合計盤點總數」）
-  opsMargins: [] // 作業分析「損益分析」歷史毛利%：{ brandId, storeId, month, marginPercent }，每次匯出時存當月各店毛利%，供下個月匯出時查「上期毛利%」
+  opsMargins: [],
+  // 作業分析「損益分析」歷史毛利%：{ brandId, storeId, month, marginPercent }，每次匯出時存當月各店毛利%，供下個月匯出時查「上期毛利%」
+  layoutOverrides: [] // Layout圖轉檔例外設定：{ storeId, month, sheetName, range }（少數店鋪畫法跟大多數不一樣、自動判斷抓錯分頁/範圍時手動指定；sheetName/range 任一留空代表該項用自動判斷）
 };
 
 /* ---------------- 資料存取（透過 api.js 抽象層） ----------------
  * 維護類資料（單一管理者編輯）→ 整表覆蓋（ADMIN_TABS），背景防抖批次同步
  * 盤點/上傳紀錄（多裝置同時新增）→ 逐筆 append，避免互相覆蓋
- * Layout圖／盤點總表 → 逐筆 upsertRow，上傳當下就同步寫入等結果，不透過背景批次同步
+ * Layout圖／盤點總表／Layout轉檔例外設定 → 逐筆 upsertRow，當下就同步寫入等結果，不透過背景批次同步
  *   （批次同步是多分頁平行送出、失敗會整批漏寫又不會重試，且失敗後背景刷新會用舊資料蓋掉剛上傳成功的畫面）
  */
 const ADMIN_TABS = ["brands", "stores", "staff", "prices", "aliases", "categoryAliases", "manuals", "opsMargins"];
-const ALL_TABS = [...ADMIN_TABS, "layouts", "countTotals", "records", "uploads"];
+const ALL_TABS = [...ADMIN_TABS, "layouts", "countTotals", "layoutOverrides", "records", "uploads"];
 function seed() {
   return JSON.parse(JSON.stringify(seedDB));
 }
@@ -598,7 +600,9 @@ async function bulkDownloadFiles(list, zipBaseName, toast, asLayoutPdf) {
       const z = await InventoryAPI.zipFiles(list.map(l => ({
         fileUrl: l.fileUrl,
         fileName: l.fileName,
-        printRange: l.printRange
+        printRange: l.printRange,
+        storeId: l.storeId,
+        month: l.month
       })), zipBaseName, asLayoutPdf);
       if (z) {
         downloadBase64Zip(z.filename, z.base64);
@@ -1290,8 +1294,75 @@ function LayoutZone({
   const [busy, setBusy] = useState("");
   const [dlBusy, setDlBusy] = useState("");
   const [downloadingAll, setDownloadingAll] = useState(""); // "" | "excel" | "pdf"
+  const [overrideStoreId, setOverrideStoreId] = useState(""); // 目前展開「轉檔設定」的店鋪 id
+  const [overrideForm, setOverrideForm] = useState({
+    sheetName: "",
+    range: ""
+  });
+  const [overrideBusy, setOverrideBusy] = useState(false);
   const brand = db.brands.find(b => b.id === brandId);
   const layoutOf = storeId => (db.layouts || []).find(l => l.storeId === storeId && l.month === month);
+  const overrideOf = storeId => (db.layoutOverrides || []).find(o => o.storeId === storeId && o.month === month);
+
+  // 轉檔設定：少數店鋪的 Layout Excel 畫法跟大多數店不一樣（例如分成兩張獨立分頁畫，而不是畫在同一張
+  // 「賣場+倉庫」合併分頁），導致自動判斷抓到幾乎空白的錯分頁，或抓的列印範圍不完整。這裡讓管理者手動
+  // 指定該店該月份要轉檔的分頁名稱／列印範圍，兩者皆留空即恢復自動判斷。
+  const toggleOverride = store => {
+    if (overrideStoreId === store.id) {
+      setOverrideStoreId("");
+      return;
+    }
+    const existing = overrideOf(store.id);
+    setOverrideForm({
+      sheetName: existing ? existing.sheetName || "" : "",
+      range: existing ? existing.range || "" : ""
+    });
+    setOverrideStoreId(store.id);
+  };
+  const saveOverride = async store => {
+    const rec = {
+      storeId: store.id,
+      month,
+      sheetName: overrideForm.sheetName.trim(),
+      range: overrideForm.range.trim()
+    };
+    setOverrideBusy(true);
+    try {
+      await InventoryAPI.upsertRow("layoutOverrides", ["storeId", "month"], rec);
+      setDB(d => ({
+        ...d,
+        layoutOverrides: [...(d.layoutOverrides || []).filter(o => !(o.storeId === store.id && o.month === month)), rec]
+      }));
+      toast(`已套用「${store.name}」轉檔設定 ✔`);
+      setOverrideStoreId("");
+    } catch (err) {
+      toast("設定失敗，請確認網路");
+    } finally {
+      setOverrideBusy(false);
+    }
+  };
+  const clearOverride = async store => {
+    const rec = {
+      storeId: store.id,
+      month,
+      sheetName: "",
+      range: ""
+    };
+    setOverrideBusy(true);
+    try {
+      await InventoryAPI.upsertRow("layoutOverrides", ["storeId", "month"], rec);
+      setDB(d => ({
+        ...d,
+        layoutOverrides: [...(d.layoutOverrides || []).filter(o => !(o.storeId === store.id && o.month === month)), rec]
+      }));
+      toast(`已清除「${store.name}」轉檔設定`);
+      setOverrideStoreId("");
+    } catch (err) {
+      toast("清除失敗，請確認網路");
+    } finally {
+      setOverrideBusy(false);
+    }
+  };
   const baseStores = db.stores.filter(s => s.brandId === brandId && s.month === month && !s.isSub) // 只列主店，不含分倉
   .map(s => ({
     ...s,
@@ -1358,7 +1429,7 @@ function LayoutZone({
   const downloadOne = async (store, l) => {
     setDlBusy(store.id);
     try {
-      const pdf = await InventoryAPI.layoutPdf(l.fileUrl, l.fileName, l.printRange);
+      const pdf = await InventoryAPI.layoutPdf(l.fileUrl, l.fileName, l.printRange, store.id, month);
       if (pdf) {
         downloadBase64File(pdf.filename, pdf.base64, "application/pdf");
         toast(`已下載「${store.name}」Layout 圖（PDF）✔`);
@@ -1469,8 +1540,11 @@ function LayoutZone({
     options: ["已上傳", "尚未上傳"]
   })), /*#__PURE__*/React.createElement("th", null))), /*#__PURE__*/React.createElement("tbody", null, stores.map(s => {
     const l = layoutOf(s.id);
-    return /*#__PURE__*/React.createElement("tr", {
-      key: s.id,
+    const ov = overrideOf(s.id);
+    const hasOverride = !!(ov && (ov.sheetName || ov.range));
+    return /*#__PURE__*/React.createElement(React.Fragment, {
+      key: s.id
+    }, /*#__PURE__*/React.createElement("tr", {
       className: "border-b last:border-0"
     }, /*#__PURE__*/React.createElement("td", {
       className: "py-3 pr-4"
@@ -1486,7 +1560,9 @@ function LayoutZone({
       className: "text-emerald-600"
     }, "已上傳") : /*#__PURE__*/React.createElement("span", {
       className: "text-slate-400"
-    }, "尚未上傳")), /*#__PURE__*/React.createElement("td", {
+    }, "尚未上傳"), hasOverride && /*#__PURE__*/React.createElement("span", {
+      className: "ml-1 text-xs text-amber-600"
+    }, "（已設定例外）")), /*#__PURE__*/React.createElement("td", {
       className: "py-3 pr-4"
     }, /*#__PURE__*/React.createElement("div", {
       className: "flex items-center gap-2"
@@ -1505,7 +1581,48 @@ function LayoutZone({
       onClick: () => downloadOne(s, l),
       disabled: dlBusy === s.id,
       className: "px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 disabled:bg-slate-400 text-white text-sm rounded-lg"
-    }, dlBusy === s.id ? "轉檔中…" : "⬇ 下載PDF"))));
+    }, dlBusy === s.id ? "轉檔中…" : "⬇ 下載PDF"), l && /*#__PURE__*/React.createElement("button", {
+      onClick: () => toggleOverride(s),
+      title: "轉檔設定（手動指定分頁/範圍）",
+      className: "px-2 py-1.5 text-sm rounded-lg " + (hasOverride ? "bg-amber-200 hover:bg-amber-300 text-amber-800" : "bg-amber-100 hover:bg-amber-200 text-amber-700")
+    }, "⚙")))), overrideStoreId === s.id && /*#__PURE__*/React.createElement("tr", {
+      className: "bg-amber-50 border-b"
+    }, /*#__PURE__*/React.createElement("td", {
+      colSpan: "6",
+      className: "py-3 px-4"
+    }, /*#__PURE__*/React.createElement("div", {
+      className: "text-xs font-medium text-amber-700 mb-2"
+    }, s.name, "－轉檔設定（覆蓋自動判斷；兩項都留空＝恢復自動判斷）"), /*#__PURE__*/React.createElement("div", {
+      className: "flex flex-wrap gap-3 items-end"
+    }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
+      className: "block text-xs text-slate-500 mb-1"
+    }, "要轉換的分頁名稱"), /*#__PURE__*/React.createElement("input", {
+      value: overrideForm.sheetName,
+      onChange: e => setOverrideForm(f => ({
+        ...f,
+        sheetName: e.target.value
+      })),
+      placeholder: "例：歐聖-賣場LAYOUT",
+      className: "px-3 py-1.5 border border-slate-300 rounded-lg text-sm w-56"
+    })), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
+      className: "block text-xs text-slate-500 mb-1"
+    }, "列印範圍"), /*#__PURE__*/React.createElement("input", {
+      value: overrideForm.range,
+      onChange: e => setOverrideForm(f => ({
+        ...f,
+        range: e.target.value
+      })),
+      placeholder: "例：A1:Q21",
+      className: "px-3 py-1.5 border border-slate-300 rounded-lg text-sm w-32"
+    })), /*#__PURE__*/React.createElement("button", {
+      onClick: () => clearOverride(s),
+      disabled: overrideBusy,
+      className: "px-3 py-1.5 bg-slate-200 hover:bg-slate-300 disabled:bg-slate-100 text-slate-700 text-sm rounded-lg"
+    }, "清除設定"), /*#__PURE__*/React.createElement("button", {
+      onClick: () => saveOverride(s),
+      disabled: overrideBusy,
+      className: "px-3 py-1.5 bg-slate-800 hover:bg-slate-900 disabled:bg-slate-400 text-white text-sm rounded-lg"
+    }, "套用")))));
   }), stores.length === 0 && /*#__PURE__*/React.createElement("tr", null, /*#__PURE__*/React.createElement("td", {
     colSpan: "6",
     className: "py-6 text-center text-slate-400"

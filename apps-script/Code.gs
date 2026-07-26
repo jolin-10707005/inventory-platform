@@ -11,7 +11,7 @@
 // 盤點照片要存放的 Google Drive 資料夾 ID（即使用者提供的資料夾）
 var PHOTO_FOLDER_ID = "1h9qjSAx2-sojs5_uP307qmBUvw-XiDhn";
 
-var TABS = ["brands", "stores", "staff", "prices", "records", "uploads", "aliases", "categoryAliases", "manuals", "layouts", "countTotals", "opsMargins"];
+var TABS = ["brands", "stores", "staff", "prices", "records", "uploads", "aliases", "categoryAliases", "manuals", "layouts", "countTotals", "opsMargins", "layoutOverrides"];
 
 // 分頁顯示名稱（程式內部仍用英文代碼；工作表分頁改中文，方便人工檢視）
 var SHEET_NAMES = {
@@ -27,7 +27,8 @@ var SHEET_NAMES = {
   manuals: "盤點手冊",
   layouts: "Layout圖",
   countTotals: "盤點總表",
-  opsMargins: "損益歷史"
+  opsMargins: "損益歷史",
+  layoutOverrides: "Layout轉檔例外設定"
 };
 
 function doGet(e) {
@@ -64,7 +65,7 @@ function doPost(e) {
       case "zipFiles":
         return jsonOut(zipFiles(body.files, body.zipName, body.asLayoutPdf));
       case "layoutPdf":
-        return jsonOut(layoutPdf(body.fileUrl, body.fileName, body.printRange));
+        return jsonOut(layoutPdf(body.fileUrl, body.fileName, body.printRange, body.storeId, body.month));
       case "putMaster":
         putMaster(body.rec);
         return jsonOut({ ok: true });
@@ -252,8 +253,8 @@ function deleteDriveFile(fileUrl) {
   return { ok: true };
 }
 
-// 批次打包下載：files = [{fileUrl, fileName}]；伺服器端直接讀 Drive 檔案打包，避免瀏覽器端 CORS 限制
-// asLayoutPdf=true 時，每份先把 Excel 的「賣場+倉庫 LAYOUT」分頁轉成 PDF 再打包（Layout 圖用）
+// 批次打包下載：files = [{fileUrl, fileName, storeId, month}]；伺服器端直接讀 Drive 檔案打包，避免瀏覽器端 CORS 限制
+// asLayoutPdf=true 時，每份先把 Excel 轉成 PDF 再打包（Layout 圖用）；轉檔前會先查該店該月份有沒有手動例外設定
 function zipFiles(files, zipName, asLayoutPdf) {
   if (!files || files.length === 0) return { error: "沒有可下載的檔案" };
   var blobs = [];
@@ -262,7 +263,9 @@ function zipFiles(files, zipName, asLayoutPdf) {
     if (!id) return;
     var blob, fname;
     if (asLayoutPdf) {
-      blob = layoutExcelToPdf(id, f.printRange);
+      var override = getLayoutOverride(f.storeId, f.month);
+      var effectiveRange = (override && override.range) ? override.range : f.printRange;
+      blob = layoutExcelToPdf(id, effectiveRange, override && override.sheetName);
       fname = String(f.fileName || blob.getName()).replace(/\.(xlsx|xls)$/i, "") + ".pdf";
     } else {
       blob = DriveApp.getFileById(id).getBlob();
@@ -273,6 +276,20 @@ function zipFiles(files, zipName, asLayoutPdf) {
   if (blobs.length === 0) return { error: "找不到可下載的檔案" };
   var zipBlob = Utilities.zip(blobs, (zipName || "下載") + ".zip");
   return { ok: true, filename: zipBlob.getName(), base64: Utilities.base64Encode(zipBlob.getBytes()) };
+}
+
+// 查詢某店某月份有沒有手動指定的轉檔例外設定（分頁名稱／列印範圍），沒有回傳 null。
+// sheetName/range 任一為空字串都視為「這項沒設定」，呼叫端會用該項原本的值。
+function getLayoutOverride(storeId, month) {
+  if (!storeId || !month) return null;
+  var rows = readTab("layoutOverrides");
+  for (var i = 0; i < rows.length; i++) {
+    var r = rows[i];
+    if (String(r.storeId) === String(storeId) && String(r.month) === String(month)) {
+      return { sheetName: String(r.sheetName || "").trim(), range: String(r.range || "").trim() };
+    }
+  }
+  return null;
 }
 
 // Layout 圖只轉這張分頁（名稱去掉空白後包含此關鍵字者）
@@ -299,18 +316,28 @@ function parseA1Range(rangeStr) {
   return { c1: colToNum(m[1]) - 1, r1: Number(m[2]) - 1, c2: colToNum(m[3]), r2: Number(m[4]) };
 }
 
-// printRange：前端上傳 Layout 圖時，用 SheetJS 從 Excel 原檔讀出的實際列印範圍（如 "A1:Q33"），見 script.js 的 readLayoutPrintRange。
-// 有給就照這個範圍轉檔；沒有（舊資料、或原檔沒設定列印範圍）才退回用「實際有填內容」的儲存格自動抓範圍——
-// 不能用 getLastRow()/getLastColumn()，那兩個連只有背景色/框線等格式、沒有內容的儲存格也算進去，範圍會抓過大。
-function layoutExcelToPdf(fileId, printRange) {
+// printRange：前端上傳 Layout 圖時，用 SheetJS 從 Excel 原檔讀出的實際列印範圍（如 "A1:Q33"），見 script.js 的 readLayoutPrintRange，
+// 也可能是手動例外設定裡指定的範圍。有給就照這個範圍轉檔；沒有（舊資料、原檔沒設定列印範圍）才退回用「實際有填內容」
+// 的儲存格自動抓範圍——不能用 getLastRow()/getLastColumn()，那兩個連只有背景色/框線等格式、沒有內容的儲存格也算進去，範圍會抓過大。
+// sheetNameOverride：手動例外設定指定的分頁名稱（完全比對），有給就優先用這張，找不到才退回關鍵字判斷。
+// 之所以需要這個例外機制：不同店鋪實際填寫 Layout Excel 的習慣不一致——有些店把賣場+倉庫畫在同一張分頁，
+// 有些店卻分成兩張獨立分頁畫，光靠關鍵字判斷會抓到錯的（幾乎空白的）分頁。
+function layoutExcelToPdf(fileId, printRange, sheetNameOverride) {
   var xlsxFile = DriveApp.getFileById(fileId);
   var ssId = importXlsxToGoogleSheet(xlsxFile.getBlob(), "_tmp_layout_" + fileId);
   try {
     var ss = SpreadsheetApp.openById(ssId);
     var sheets = ss.getSheets();
     var target = null;
-    for (var i = 0; i < sheets.length; i++) {
-      if (sheets[i].getName().replace(/\s/g, "").indexOf(LAYOUT_SHEET_KEYWORD) >= 0) { target = sheets[i]; break; }
+    if (sheetNameOverride) {
+      for (var j = 0; j < sheets.length; j++) {
+        if (sheets[j].getName() === sheetNameOverride) { target = sheets[j]; break; }
+      }
+    }
+    if (!target) {
+      for (var i = 0; i < sheets.length; i++) {
+        if (sheets[i].getName().replace(/\s/g, "").indexOf(LAYOUT_SHEET_KEYWORD) >= 0) { target = sheets[i]; break; }
+      }
     }
     if (!target) target = sheets[0];
     var gid = target.getSheetId();
@@ -351,11 +378,13 @@ function layoutExcelToPdf(fileId, printRange) {
   }
 }
 
-// 單張 Layout PDF 下載：把指定 Drive Excel 轉成 PDF，回傳 base64
-function layoutPdf(fileUrl, fileName, printRange) {
+// 單張 Layout PDF 下載：把指定 Drive Excel 轉成 PDF，回傳 base64。轉檔前先查該店該月份有沒有手動例外設定。
+function layoutPdf(fileUrl, fileName, printRange, storeId, month) {
   var id = extractDriveId(fileUrl);
   if (!id) return { error: "找不到檔案" };
-  var pdf = layoutExcelToPdf(id, printRange);
+  var override = getLayoutOverride(storeId, month);
+  var effectiveRange = (override && override.range) ? override.range : printRange;
+  var pdf = layoutExcelToPdf(id, effectiveRange, override && override.sheetName);
   var name = String(fileName || "layout").replace(/\.(xlsx|xls)$/i, "") + ".pdf";
   return { ok: true, filename: name, base64: Utilities.base64Encode(pdf.getBytes()) };
 }

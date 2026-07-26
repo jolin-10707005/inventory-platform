@@ -164,11 +164,12 @@ const InventoryAPI = {
     return j.url;
   },
 
-  /** Layout 圖下載：後端把上傳的 Excel 「賣場+倉庫 LAYOUT」分頁轉成 PDF，回傳 { filename, base64 }。
+  /** Layout 圖下載：後端把上傳的 Excel 轉成 PDF，回傳 { filename, base64 }（storeId/month 供後端查該店該月份
+   *  有沒有手動轉檔例外設定——指定分頁/範圍，用於少數店鋪畫法跟大多數店不一樣、自動判斷會抓錯的情況）。
    *  本機模式無後端轉檔，回傳 null 讓呼叫端改為下載原始檔 */
-  async layoutPdf(fileUrl, fileName, printRange) {
+  async layoutPdf(fileUrl, fileName, printRange, storeId, month) {
     if (!this.cloud()) return null;
-    const j = await this._post({ action: "layoutPdf", fileUrl, fileName, printRange });
+    const j = await this._post({ action: "layoutPdf", fileUrl, fileName, printRange, storeId, month });
     if (j.error) throw new Error(j.error);
     return { filename: j.filename, base64: j.base64 };
   },
