@@ -1894,7 +1894,6 @@ function AnalysisZone({ db, setDB, month, setMonth, toast }) {
   const [filters, setFilters] = useState({});
   const setF = (k, v) => setFilters((p) => ({ ...p, [k]: v }));
   const selBrand = db.brands.find((b) => b.id === brandId);
-  const osheng = isOshengBrand(selBrand);
 
   const rows = useMemo(() => {
     return db.records
@@ -1928,9 +1927,13 @@ function AnalysisZone({ db, setDB, month, setMonth, toast }) {
     pieces: a.pieces + r.pieces, manHours: a.manHours + r.manHours, base: a.base + r.base, docFee: a.docFee + r.docFee, otFee: a.otFee + r.otFee, amount: a.amount + r.amount,
   }), { pieces: 0, manHours: 0, base: 0, docFee: 0, otFee: 0, amount: 0 });
 
+  // 沒有特別選品牌（畫面上顯示全部品牌）時，若目前篩出的資料其實全部同一個品牌，匯出仍要照該品牌的格式來（例如全部都是歐聖）
+  const effectiveBrandId = brandId || (viewRows.length > 0 && viewRows.every((r) => r.brandId === viewRows[0].brandId) ? viewRows[0].brandId : "");
+  const osheng = isOshengBrand(db.brands.find((b) => b.id === effectiveBrandId));
+
   // 歐聖請款：依範本 3 分頁（彙總/客戶/內部），保留公式
   const exportBillingOsheng = () => {
-    const p = db.prices.find((x) => x.brandId === brandId) || {};
+    const p = db.prices.find((x) => x.brandId === effectiveBrandId) || {};
     const unit = num(p.unitPrice) || 2.2, minC = num(p.minCharge) || 5000, whF = num(p.whFee) || 500;
     const minPieces = Math.ceil(minC / unit); // 低於此件數 → 最低收費
     const md = (d) => { const s = String(d).split("-"); return s.length === 3 ? `${+s[1]}/${+s[2]}` : d; };
@@ -2104,14 +2107,14 @@ function AnalysisZone({ db, setDB, month, setMonth, toast }) {
   // Excel 日期/時間格式（非文字），分頁間用跨分頁公式互相引用（不重複帶值），並在匯出時把本月各店毛利%存進歷史，
   // 供下個月匯出時自動帶出「上期毛利%」（本月若查無上期資料則留空）
   const exportOpsOsheng = () => {
-    const p = db.prices.find((x) => x.brandId === brandId) || {};
+    const p = db.prices.find((x) => x.brandId === effectiveBrandId) || {};
     const unit = num(p.unitPrice) || 2.2, minC = num(p.minCharge) || 5000, whF = num(p.whFee) || 500, costRate = num(p.costRate) || 315;
     const gVal = (r) => Math.round(Math.max(r.pieces * unit, minC) + ((num(r.warehouse) || 1) - 1) * whF);
     const N = viewRows.length;
 
     // 查詢某店「上一次盤點」（本品牌、月份 < 本月、最近一次有記錄的月份）的毛利%
     const prevMarginFor = (storeId) => {
-      const recs = (db.opsMargins || []).filter((x) => x.brandId === brandId && x.storeId === storeId && x.month < month);
+      const recs = (db.opsMargins || []).filter((x) => x.brandId === effectiveBrandId && x.storeId === storeId && x.month < month);
       if (recs.length === 0) return null;
       recs.sort((a, b) => a.month.localeCompare(b.month));
       return recs[recs.length - 1].marginPercent;
@@ -2235,9 +2238,9 @@ function AnalysisZone({ db, setDB, month, setMonth, toast }) {
 
     // 把本月各店毛利%存進歷史，供下個月匯出時查「上期毛利%」（同店同月重新匯出會覆蓋，不會重複累積）
     const storeIdsThisExport = new Set(computed.map((c) => c.r.storeId));
-    const marginRecs = computed.filter((c) => c.marginPct != null).map((c) => ({ brandId, storeId: c.r.storeId, month, marginPercent: c.marginPct }));
+    const marginRecs = computed.filter((c) => c.marginPct != null).map((c) => ({ brandId: effectiveBrandId, storeId: c.r.storeId, month, marginPercent: c.marginPct }));
     setDB((d) => {
-      const kept = (d.opsMargins || []).filter((x) => !(x.brandId === brandId && x.month === month && storeIdsThisExport.has(x.storeId)));
+      const kept = (d.opsMargins || []).filter((x) => !(x.brandId === effectiveBrandId && x.month === month && storeIdsThisExport.has(x.storeId)));
       return { ...d, opsMargins: [...kept, ...marginRecs] };
     });
 
