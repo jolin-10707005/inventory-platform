@@ -174,6 +174,14 @@ const InventoryAPI = {
     return { filename: j.filename, base64: j.base64 };
   },
 
+  /** 讀出 Layout Excel 原檔實際有哪些分頁（供「轉檔設定」畫面做成選單）。本機模式沒有後端可轉，回傳空陣列 */
+  async getLayoutSheetNames(fileUrl) {
+    if (!this.cloud()) return [];
+    const j = await this._post({ action: "getLayoutSheetNames", fileUrl });
+    if (j.error) throw new Error(j.error);
+    return j.names || [];
+  },
+
   /** 刪除單一 Drive 檔案（重新上傳同店同月份的 Layout圖／盤點總表後，清掉被取代的舊檔，避免孤兒檔案累積）。
    *  本機模式無 Drive，直接略過；找不到/已刪除的檔案後端視為成功，不會拋錯 */
   async deleteFile(fileUrl) {

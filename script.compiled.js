@@ -1331,6 +1331,8 @@ function LayoutZone({
     range: ""
   });
   const [overrideBusy, setOverrideBusy] = useState(false);
+  const [overrideSheetOptions, setOverrideSheetOptions] = useState([]); // 該店 Excel 原檔實際的分頁名稱清單
+  const [overrideSheetLoading, setOverrideSheetLoading] = useState(false);
   const brand = db.brands.find(b => b.id === brandId);
   const layoutOf = storeId => (db.layouts || []).find(l => l.storeId === storeId && l.month === month);
   const overrideOf = storeId => (db.layoutOverrides || []).find(o => o.storeId === storeId && o.month === month);
@@ -1338,23 +1340,39 @@ function LayoutZone({
   // 轉檔設定：少數店鋪的 Layout Excel 畫法跟大多數店不一樣（例如分成兩張獨立分頁畫，而不是畫在同一張
   // 「賣場+倉庫」合併分頁），導致自動判斷抓到幾乎空白的錯分頁，或抓的列印範圍不完整。這裡讓管理者手動
   // 指定該店該月份要轉檔的分頁名稱／列印範圍，兩者皆留空即恢復自動判斷。
-  const toggleOverride = store => {
+  // 分頁名稱改用讀出來的實際分頁清單做選單（避免手key打錯字，也不用記分頁名稱裡的空白）；
+  // 列印範圍預設帶出「目前沒有例外設定時實際會用到」的範圍（該店上傳時偵測到的 Print_Area），
+  // 而不是空白，方便使用者直接看到現況、只在真的需要調整時才動它。
+  const toggleOverride = async store => {
     if (overrideStoreId === store.id) {
       setOverrideStoreId("");
       return;
     }
+    const l = layoutOf(store.id);
     const existing = overrideOf(store.id);
     setOverrideForm({
       sheetName: existing ? existing.sheetName || "" : "",
-      range: existing ? existing.range || "" : ""
+      range: existing && existing.range ? existing.range : l ? l.printRange || "" : ""
     });
+    setOverrideSheetOptions([]);
     setOverrideStoreId(store.id);
+    if (l) {
+      setOverrideSheetLoading(true);
+      try {
+        const names = await InventoryAPI.getLayoutSheetNames(l.fileUrl);
+        setOverrideSheetOptions(names);
+      } catch (err) {
+        toast("讀取分頁清單失敗：" + (err && err.message ? err.message : "請確認網路"));
+      } finally {
+        setOverrideSheetLoading(false);
+      }
+    }
   };
   const saveOverride = async store => {
     const rec = {
       storeId: store.id,
       month,
-      sheetName: overrideForm.sheetName.trim(),
+      sheetName: overrideForm.sheetName,
       range: overrideForm.range.trim()
     };
     setOverrideBusy(true);
@@ -1616,44 +1634,53 @@ function LayoutZone({
       onClick: () => toggleOverride(s),
       title: "轉檔設定（手動指定分頁/範圍）",
       className: "px-2 py-1.5 text-sm rounded-lg " + (hasOverride ? "bg-amber-200 hover:bg-amber-300 text-amber-800" : "bg-amber-100 hover:bg-amber-200 text-amber-700")
-    }, "⚙")))), overrideStoreId === s.id && /*#__PURE__*/React.createElement("tr", {
-      className: "bg-amber-50 border-b"
-    }, /*#__PURE__*/React.createElement("td", {
-      colSpan: "6",
-      className: "py-3 px-4"
-    }, /*#__PURE__*/React.createElement("div", {
-      className: "text-xs font-medium text-amber-700 mb-2"
-    }, s.name, "－轉檔設定（覆蓋自動判斷；兩項都留空＝恢復自動判斷）"), /*#__PURE__*/React.createElement("div", {
-      className: "flex flex-wrap gap-3 items-end"
-    }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
-      className: "block text-xs text-slate-500 mb-1"
-    }, "要轉換的分頁名稱"), /*#__PURE__*/React.createElement("input", {
-      value: overrideForm.sheetName,
-      onChange: e => setOverrideForm(f => ({
-        ...f,
-        sheetName: e.target.value
-      })),
-      placeholder: "例：歐聖-賣場LAYOUT",
-      className: "px-3 py-1.5 border border-slate-300 rounded-lg text-sm w-56"
-    })), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
-      className: "block text-xs text-slate-500 mb-1"
-    }, "列印範圍"), /*#__PURE__*/React.createElement("input", {
-      value: overrideForm.range,
-      onChange: e => setOverrideForm(f => ({
-        ...f,
-        range: e.target.value
-      })),
-      placeholder: "例：A1:Q21",
-      className: "px-3 py-1.5 border border-slate-300 rounded-lg text-sm w-32"
-    })), /*#__PURE__*/React.createElement("button", {
-      onClick: () => clearOverride(s),
-      disabled: overrideBusy,
-      className: "px-3 py-1.5 bg-slate-200 hover:bg-slate-300 disabled:bg-slate-100 text-slate-700 text-sm rounded-lg"
-    }, "清除設定"), /*#__PURE__*/React.createElement("button", {
-      onClick: () => saveOverride(s),
-      disabled: overrideBusy,
-      className: "px-3 py-1.5 bg-slate-800 hover:bg-slate-900 disabled:bg-slate-400 text-white text-sm rounded-lg"
-    }, "套用")))));
+    }, "⚙")))), overrideStoreId === s.id && (() => {
+      const autoDetected = overrideSheetOptions.find(n => n.replace(/\s/g, "").indexOf("賣場+倉庫") >= 0) || overrideSheetOptions[0] || "";
+      return /*#__PURE__*/React.createElement("tr", {
+        className: "bg-amber-50 border-b"
+      }, /*#__PURE__*/React.createElement("td", {
+        colSpan: "6",
+        className: "py-3 px-4"
+      }, /*#__PURE__*/React.createElement("div", {
+        className: "text-xs font-medium text-amber-700 mb-2"
+      }, s.name, "－轉檔設定（覆蓋自動判斷；兩項都留空＝恢復自動判斷）"), /*#__PURE__*/React.createElement("div", {
+        className: "flex flex-wrap gap-3 items-end"
+      }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
+        className: "block text-xs text-slate-500 mb-1"
+      }, "要轉換的分頁名稱"), overrideSheetLoading ? /*#__PURE__*/React.createElement("div", {
+        className: "px-3 py-1.5 text-sm text-slate-400 w-56"
+      }, "讀取分頁清單中…") : /*#__PURE__*/React.createElement("select", {
+        value: overrideForm.sheetName,
+        onChange: e => setOverrideForm(f => ({
+          ...f,
+          sheetName: e.target.value
+        })),
+        className: "px-3 py-1.5 border border-slate-300 rounded-lg text-sm w-56 bg-white"
+      }, /*#__PURE__*/React.createElement("option", {
+        value: ""
+      }, autoDetected ? `自動判斷（目前：${autoDetected}）` : "自動判斷"), overrideSheetOptions.map(n => /*#__PURE__*/React.createElement("option", {
+        key: n,
+        value: n
+      }, n)))), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
+        className: "block text-xs text-slate-500 mb-1"
+      }, "列印範圍"), /*#__PURE__*/React.createElement("input", {
+        value: overrideForm.range,
+        onChange: e => setOverrideForm(f => ({
+          ...f,
+          range: e.target.value
+        })),
+        placeholder: "例：A1:Q21（留空＝自動抓取內容範圍）",
+        className: "px-3 py-1.5 border border-slate-300 rounded-lg text-sm w-56"
+      })), /*#__PURE__*/React.createElement("button", {
+        onClick: () => clearOverride(s),
+        disabled: overrideBusy,
+        className: "px-3 py-1.5 bg-slate-200 hover:bg-slate-300 disabled:bg-slate-100 text-slate-700 text-sm rounded-lg"
+      }, "清除設定"), /*#__PURE__*/React.createElement("button", {
+        onClick: () => saveOverride(s),
+        disabled: overrideBusy,
+        className: "px-3 py-1.5 bg-slate-800 hover:bg-slate-900 disabled:bg-slate-400 text-white text-sm rounded-lg"
+      }, "套用"))));
+    })());
   }), stores.length === 0 && /*#__PURE__*/React.createElement("tr", null, /*#__PURE__*/React.createElement("td", {
     colSpan: "6",
     className: "py-6 text-center text-slate-400"
@@ -1678,7 +1705,6 @@ function FillZone({
     storeId: "",
     date: "",
     headcount: "",
-    pieces: "",
     arriveTime: "",
     countStart: "",
     countEnd: "",
@@ -1694,6 +1720,45 @@ function FillZone({
     ...f,
     [k]: v
   }));
+
+  // 名單上的「盤點日期」常是自由輸入格式（如 "2025/1/7"），轉成 <input type="date"> 需要的 "YYYY-MM-DD"
+  const auditDateToInput = str => {
+    if (!str) return "";
+    const m = String(str).trim().match(/^(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})/);
+    return m ? `${m[1]}-${String(m[2]).padStart(2, "0")}-${String(m[3]).padStart(2, "0")}` : "";
+  };
+
+  // 換月：店鋪名單會變，清空已選店鋪與其帶出的日期／人數
+  const onMonthChange = v => {
+    setMonth(v);
+    setForm(f => ({
+      ...f,
+      storeId: "",
+      date: "",
+      headcount: ""
+    }));
+  };
+
+  // 選店鋪：盤點日期帶店鋪名單上的盤點日期；盤點人數帶「盤點人員名單」中與該店同一主責課的人數（皆可手動調整）
+  const onStore = v => {
+    const store = db.stores.find(s => s.id === v);
+    const staffCount = store && store.dept ? db.staff.filter(p => p.brandId === form.brandId && p.month === month && p.dept === store.dept).length : 0;
+    setForm(f => ({
+      ...f,
+      storeId: v,
+      date: store ? auditDateToInput(store.auditDate) : "",
+      headcount: staffCount > 0 ? String(staffCount) : ""
+    }));
+  };
+
+  // 實點件數：不可手動輸入，直接帶「盤點總表上傳」擷取的合計盤點總數；有分倉的店鋪加總主店＋所有分倉
+  const selectedStore = db.stores.find(s => s.id === form.storeId);
+  const subStores = selectedStore ? db.stores.filter(s => s.parentCode === selectedStore.code && s.brandId === selectedStore.brandId && s.month === month) : [];
+  const piecesStoreIds = selectedStore ? [selectedStore.id, ...subStores.map(s => s.id)] : [];
+  const derivedPieces = piecesStoreIds.reduce((sum, sid) => {
+    const c = (db.countTotals || []).find(c => c.storeId === sid && c.month === month);
+    return sum + (c && c.total !== "" && c.total != null ? Number(c.total) : 0);
+  }, 0);
   const onPhotos = e => {
     const files = Array.from(e.target.files).slice(0, 6);
     Promise.all(files.map(f => new Promise(res => {
@@ -1714,14 +1779,14 @@ function FillZone({
     if (!form.date) err.date = "請選擇盤點日期";
     if (!form.countStart || !form.countEnd) err.count = "請填寫存貨開始與結束盤點時間";
     if (!form.headcount || Number(form.headcount) <= 0) err.headcount = "人數須大於 0";
-    if (!form.pieces || Number(form.pieces) <= 0) err.pieces = "件數須大於 0";
+    if (!derivedPieces || derivedPieces <= 0) err.pieces = "尚未取得實點件數，請確認該店（含分倉）已上傳盤點總表";
     setErrors(err);
     return Object.keys(err).length === 0;
   };
 
   // 存貨盤點耗時（時數）與人時、效率預覽
   const countHrs = calcHours(form.countStart, form.countEnd);
-  const eff = countHrs > 0 && Number(form.headcount) > 0 && Number(form.pieces) > 0 ? Math.round(Number(form.pieces) / (countHrs * Number(form.headcount))) : 0;
+  const eff = countHrs > 0 && Number(form.headcount) > 0 && derivedPieces > 0 ? Math.round(derivedPieces / (countHrs * Number(form.headcount))) : 0;
   const [saving, setSaving] = useState(false);
   const submit = async () => {
     if (!validate()) {
@@ -1748,7 +1813,7 @@ function FillZone({
         month,
         date: form.date,
         headcount: Number(form.headcount),
-        pieces: Number(form.pieces),
+        pieces: derivedPieces,
         arriveTime: form.arriveTime,
         countStart: form.countStart,
         countEnd: form.countEnd,
@@ -1817,7 +1882,13 @@ function FillZone({
     className: "space-y-4"
   }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
     className: "flex flex-wrap gap-3 items-center"
-  }, /*#__PURE__*/React.createElement(BrandStoreSelect, {
+  }, /*#__PURE__*/React.createElement("input", {
+    type: "month",
+    value: month,
+    onChange: e => onMonthChange(e.target.value),
+    title: "盤點月份",
+    className: "px-3 py-2 border border-slate-300 rounded-lg text-sm bg-white focus:ring-2 focus:ring-blue-500 outline-none"
+  }), /*#__PURE__*/React.createElement(BrandStoreSelect, {
     db: db,
     brandId: form.brandId,
     storeId: form.storeId,
@@ -1825,15 +1896,11 @@ function FillZone({
     onBrand: v => setForm(f => ({
       ...f,
       brandId: v,
-      storeId: ""
+      storeId: "",
+      date: "",
+      headcount: ""
     })),
-    onStore: v => set("storeId", v)
-  }), /*#__PURE__*/React.createElement("input", {
-    type: "month",
-    value: month,
-    onChange: e => setMonth(e.target.value),
-    title: "盤點月份",
-    className: "px-3 py-2 border border-slate-300 rounded-lg text-sm bg-white focus:ring-2 focus:ring-blue-500 outline-none"
+    onStore: onStore
   })), /*#__PURE__*/React.createElement(Err, {
     k: "brandId"
   }), /*#__PURE__*/React.createElement(Err, {
@@ -1862,13 +1929,12 @@ function FillZone({
     k: "headcount"
   })), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
     className: "text-sm text-slate-600"
-  }, "實盤件數 *"), /*#__PURE__*/React.createElement("input", {
+  }, "實盤件數 *（帶自盤點總表，無法更改）"), /*#__PURE__*/React.createElement("input", {
     type: "number",
-    min: "1",
-    value: form.pieces,
-    onChange: e => set("pieces", e.target.value),
-    className: inputCls,
-    placeholder: "例：688"
+    value: derivedPieces > 0 ? derivedPieces : "",
+    readOnly: true,
+    placeholder: "尚未上傳盤點總表",
+    className: inputCls + " bg-slate-100 text-slate-500 cursor-not-allowed"
   }), /*#__PURE__*/React.createElement(Err, {
     k: "pieces"
   }))), /*#__PURE__*/React.createElement("div", {
