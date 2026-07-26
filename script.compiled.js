@@ -1196,7 +1196,7 @@ function CountUploadZone({
             }
           }
         }
-        const url = await InventoryAPI.uploadCountSheet(reader.result, f.name, brand ? brand.name : "");
+        const url = await InventoryAPI.uploadCountSheet(reader.result, f.name, brand ? brand.name : "", month);
         const rec = {
           storeId: store.id,
           month,
@@ -1471,7 +1471,7 @@ function LayoutZone({
     reader.onload = async () => {
       try {
         const printRange = await readLayoutPrintRange(f);
-        const url = await InventoryAPI.uploadLayout(reader.result, f.name, brand ? brand.name : "");
+        const url = await InventoryAPI.uploadLayout(reader.result, f.name, brand ? brand.name : "", month);
         const rec = {
           storeId: store.id,
           month,
@@ -1871,7 +1871,7 @@ function FillZone({
           });
           continue;
         } // 編輯時保留既有照片，不重新上傳
-        const url = await InventoryAPI.uploadPhoto(p.dataUrl, p.name, brandName);
+        const url = await InventoryAPI.uploadPhoto(p.dataUrl, p.name, brandName, month);
         photos.push(InventoryAPI.cloud() ? {
           name: p.name,
           url

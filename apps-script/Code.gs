@@ -75,13 +75,13 @@ function doPost(e) {
       case "upsertRow":
         return jsonOut(upsertRow(body.tab, body.keyFields, body.row, body.brandId));
       case "uploadPhoto":
-        return jsonOut({ ok: true, url: uploadPhoto(body.dataUrl, body.filename, body.brandName) });
+        return jsonOut({ ok: true, url: uploadPhoto(body.dataUrl, body.filename, body.brandName, body.month) });
       case "uploadManual":
         return jsonOut({ ok: true, url: uploadManual(body.dataUrl, body.filename, body.brandName) });
       case "uploadLayout":
-        return jsonOut({ ok: true, url: uploadLayout(body.dataUrl, body.filename, body.brandName) });
+        return jsonOut({ ok: true, url: uploadLayout(body.dataUrl, body.filename, body.brandName, body.month) });
       case "uploadCountSheet":
-        return jsonOut({ ok: true, url: uploadCountSheet(body.dataUrl, body.filename, body.brandName) });
+        return jsonOut({ ok: true, url: uploadCountSheet(body.dataUrl, body.filename, body.brandName, body.month) });
       case "deleteFile":
         return jsonOut(deleteDriveFile(body.fileUrl));
       case "zipFiles":
@@ -262,10 +262,13 @@ function getOrCreateFolder(parentFolder, name) {
 }
 
 // 品牌／檔案類型對應的 Drive 資料夾：根目錄 → 品牌 → Layout圖／盤點總表／盤點手冊
-function getBrandSubfolder(brandName, subName) {
+// month 有帶（"YYYY-MM"）就再往下多一層月份資料夾：根目錄 → 品牌 → 類型 → 月份。
+// 盤點手冊不分月份，呼叫端不傳 month，維持原本兩層（根目錄 → 品牌 → 盤點手冊）
+function getBrandSubfolder(brandName, subName, month) {
   var root = DriveApp.getFolderById(PHOTO_FOLDER_ID);
   var brandFolder = getOrCreateFolder(root, brandName || "未分類品牌");
-  return getOrCreateFolder(brandFolder, subName);
+  var typeFolder = getOrCreateFolder(brandFolder, subName);
+  return month ? getOrCreateFolder(typeFolder, month) : typeFolder;
 }
 
 // 共用：驗證並存進 Google Drive（可指定資料夾），回傳可存取連結
@@ -287,8 +290,8 @@ function uploadToDrive(folder, dataUrl, filename, isAllowedType, maxBytes, rejec
   return "https://drive.google.com/uc?id=" + file.getId();
 }
 
-function uploadPhoto(dataUrl, filename, brandName) {
-  var folder = getBrandSubfolder(brandName, "紙本報表照片");
+function uploadPhoto(dataUrl, filename, brandName, month) {
+  var folder = getBrandSubfolder(brandName, "紙本報表照片", month);
   return uploadToDrive(folder, dataUrl, filename, function (ct) { return ct.indexOf("image/") === 0; }, MAX_PHOTO_BYTES, "僅允許上傳影像檔");
 }
 
@@ -298,14 +301,14 @@ function uploadManual(dataUrl, filename, brandName) {
 }
 
 // Layout 圖為 Excel 原檔（賣場配置圖，不可解析、需保留原始檔案格式）
-function uploadLayout(dataUrl, filename, brandName) {
-  var folder = getBrandSubfolder(brandName, "Layout圖");
+function uploadLayout(dataUrl, filename, brandName, month) {
+  var folder = getBrandSubfolder(brandName, "Layout圖", month);
   return uploadToDrive(folder, dataUrl, filename, isExcelType, MAX_LAYOUT_BYTES, "僅允許上傳 Excel 檔（.xlsx / .xls）");
 }
 
 // 盤點總表為 Excel 原檔，一家店一份，保留原始檔案（不解析成列資料，只由前端擷取「合計盤點總數」）
-function uploadCountSheet(dataUrl, filename, brandName) {
-  var folder = getBrandSubfolder(brandName, "盤點總表");
+function uploadCountSheet(dataUrl, filename, brandName, month) {
+  var folder = getBrandSubfolder(brandName, "盤點總表", month);
   return uploadToDrive(folder, dataUrl, filename, isExcelType, MAX_COUNT_BYTES, "僅允許上傳 Excel 檔（.xlsx / .xls）");
 }
 
@@ -846,6 +849,14 @@ function cleanupOrphanFiles() {
   });
 
   var removed = [];
+  // 掃某個資料夾直屬的檔案（不含子資料夾）；月份資料夾上線後，舊檔還留在類型資料夾這層，新檔會在月份子資料夾裡，兩層都要掃
+  var scanFiles = function (folder, pathPrefix) {
+    var files = folder.getFiles();
+    while (files.hasNext()) {
+      var f = files.next();
+      if (!referenced[f.getId()]) { removed.push(pathPrefix + "/" + f.getName()); f.setTrashed(true); }
+    }
+  };
   var brandFolders = DriveApp.getFolderById(PHOTO_FOLDER_ID).getFolders();
   while (brandFolders.hasNext()) {
     var bf = brandFolders.next();
@@ -853,13 +864,11 @@ function cleanupOrphanFiles() {
       var subIt = bf.getFoldersByName(subName);
       if (!subIt.hasNext()) return;
       var sub = subIt.next();
-      var files = sub.getFiles();
-      while (files.hasNext()) {
-        var f = files.next();
-        if (!referenced[f.getId()]) {
-          removed.push(bf.getName() + "/" + subName + "/" + f.getName());
-          f.setTrashed(true);
-        }
+      scanFiles(sub, bf.getName() + "/" + subName); // 舊檔（月份資料夾上線前，直接存在這層）
+      var monthFolders = sub.getFolders();
+      while (monthFolders.hasNext()) {
+        var mf = monthFolders.next();
+        scanFiles(mf, bf.getName() + "/" + subName + "/" + mf.getName()); // 新檔（存在月份子資料夾裡）
       }
     });
   }

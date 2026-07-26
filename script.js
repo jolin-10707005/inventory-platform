@@ -758,7 +758,7 @@ function CountUploadZone({ db, setDB, month, setMonth, toast }) {
           }
         }
 
-        const url = await InventoryAPI.uploadCountSheet(reader.result, f.name, brand ? brand.name : "");
+        const url = await InventoryAPI.uploadCountSheet(reader.result, f.name, brand ? brand.name : "", month);
         const rec = { storeId: store.id, month, fileName: f.name, fileUrl: url, total, uploadedAt: new Date().toISOString().slice(0, 10) };
         await InventoryAPI.upsertRow("countTotals", ["storeId", "month"], rec, brandId); // 上傳當下就直接確定寫入 Sheet，不靠背景批次同步
         setDB((d) => ({ ...d, countTotals: [...(d.countTotals || []).filter((c) => !(c.storeId === store.id && c.month === month)), rec] }));
@@ -932,7 +932,7 @@ function LayoutZone({ db, setDB, month, setMonth, toast }) {
     reader.onload = async () => {
       try {
         const printRange = await readLayoutPrintRange(f);
-        const url = await InventoryAPI.uploadLayout(reader.result, f.name, brand ? brand.name : "");
+        const url = await InventoryAPI.uploadLayout(reader.result, f.name, brand ? brand.name : "", month);
         const rec = { storeId: store.id, month, fileName: f.name, fileUrl: url, printRange: printRange || "", uploadedAt: new Date().toISOString().slice(0, 10) };
         await InventoryAPI.upsertRow("layouts", ["storeId", "month"], rec, brandId); // 上傳當下就直接確定寫入 Sheet，不靠背景批次同步
         setDB((d) => ({ ...d, layouts: [...(d.layouts || []).filter((l) => !(l.storeId === store.id && l.month === month)), rec] }));
@@ -1200,7 +1200,7 @@ function FillZone({ db, setDB, month, setMonth, toast }) {
       const photos = [];
       for (const p of form.photos) {
         if (!p.isNew && p.url) { photos.push({ name: p.name, url: p.url }); continue; } // 編輯時保留既有照片，不重新上傳
-        const url = await InventoryAPI.uploadPhoto(p.dataUrl, p.name, brandName);
+        const url = await InventoryAPI.uploadPhoto(p.dataUrl, p.name, brandName, month);
         photos.push(InventoryAPI.cloud() ? { name: p.name, url } : { name: p.name, url: p.dataUrl });
       }
       const rec = {

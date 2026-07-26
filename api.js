@@ -144,10 +144,10 @@ const InventoryAPI = {
     if (j.error) throw new Error(j.error);
   },
 
-  /** 上傳紙本報表照片（存進該品牌的「紙本報表照片」資料夾）。本機模式直接回傳 base64；雲端模式存進 Drive 並回傳檔案連結 */
-  async uploadPhoto(dataUrl, filename, brandName) {
+  /** 上傳紙本報表照片（存進該品牌的「紙本報表照片／月份」資料夾）。本機模式直接回傳 base64；雲端模式存進 Drive 並回傳檔案連結 */
+  async uploadPhoto(dataUrl, filename, brandName, month) {
     if (!this.cloud()) return dataUrl;
-    const j = await this._post({ action: "uploadPhoto", dataUrl, filename, brandName });
+    const j = await this._post({ action: "uploadPhoto", dataUrl, filename, brandName, month });
     return j.url;
   },
 
@@ -158,17 +158,17 @@ const InventoryAPI = {
     return j.url;
   },
 
-  /** 上傳 Layout 圖（Excel 原檔，存進該品牌的「Layout圖」資料夾）。本機模式直接回傳 base64；雲端模式存進 Drive 並回傳檔案連結 */
-  async uploadLayout(dataUrl, filename, brandName) {
+  /** 上傳 Layout 圖（Excel 原檔，存進該品牌的「Layout圖／月份」資料夾）。本機模式直接回傳 base64；雲端模式存進 Drive 並回傳檔案連結 */
+  async uploadLayout(dataUrl, filename, brandName, month) {
     if (!this.cloud()) return dataUrl;
-    const j = await this._post({ action: "uploadLayout", dataUrl, filename, brandName });
+    const j = await this._post({ action: "uploadLayout", dataUrl, filename, brandName, month });
     return j.url;
   },
 
-  /** 上傳盤點總表 Excel 原檔（存進該品牌的「盤點總表」資料夾，一店一檔，不解析內容）。本機模式直接回傳 base64 */
-  async uploadCountSheet(dataUrl, filename, brandName) {
+  /** 上傳盤點總表 Excel 原檔（存進該品牌的「盤點總表／月份」資料夾，一店一檔，不解析內容）。本機模式直接回傳 base64 */
+  async uploadCountSheet(dataUrl, filename, brandName, month) {
     if (!this.cloud()) return dataUrl;
-    const j = await this._post({ action: "uploadCountSheet", dataUrl, filename, brandName });
+    const j = await this._post({ action: "uploadCountSheet", dataUrl, filename, brandName, month });
     return j.url;
   },
 
