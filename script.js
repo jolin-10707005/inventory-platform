@@ -298,6 +298,32 @@ function confirmFileNameHasStore(fileName, storeName) {
   return window.confirm(`檔名「${fileName}」看起來沒有包含店名「${storeName}」，確定要上傳嗎？`);
 }
 
+// 紙本報表照片上傳前先壓縮：手機拍照原圖常常 3~8MB，等比縮到最長邊 maxDim、轉存 JPEG，
+// 看報表內容完全夠用，檔案通常只剩幾百 KB，省 Drive 空間也讓上傳/下載都變快。
+function compressImage(file, maxDim = 1600, quality = 0.8) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const img = new Image();
+      img.onload = () => {
+        let { width, height } = img;
+        if (width > maxDim || height > maxDim) {
+          if (width > height) { height = Math.round((height * maxDim) / width); width = maxDim; }
+          else { width = Math.round((width * maxDim) / height); height = maxDim; }
+        }
+        const canvas = document.createElement("canvas");
+        canvas.width = width; canvas.height = height;
+        canvas.getContext("2d").drawImage(img, 0, 0, width, height);
+        resolve(canvas.toDataURL("image/jpeg", quality));
+      };
+      img.onerror = reject;
+      img.src = reader.result;
+    };
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
 // 在二維陣列中找指定文字標籤，回傳其右邊相鄰欄的數字（找不到回 null）；盤點總表用此擷取「合計盤點總數」
 function findLabeledTotal(aoa, label) {
   for (const row of aoa) {
@@ -1126,11 +1152,14 @@ function FillZone({ db, setDB, month, setMonth, toast }) {
 
   const onPhotos = (e) => {
     const files = Array.from(e.target.files).slice(0, 6);
-    Promise.all(files.map((f) => new Promise((res) => {
-      const r = new FileReader();
-      r.onload = () => res({ name: f.name, dataUrl: r.result, isNew: true });
-      r.readAsDataURL(f);
-    }))).then((photos) => set("photos", [...form.photos, ...photos].slice(0, 6)));
+    Promise.all(files.map((f) => compressImage(f)
+      .then((dataUrl) => ({ name: f.name.replace(/\.\w+$/, "") + ".jpg", dataUrl, isNew: true }))
+      .catch(() => new Promise((res) => { // 壓縮失敗（極少見）就退回原圖，不要因此漏傳
+        const r = new FileReader();
+        r.onload = () => res({ name: f.name, dataUrl: r.result, isNew: true });
+        r.readAsDataURL(f);
+      }))
+    )).then((photos) => set("photos", [...form.photos, ...photos].slice(0, 6)));
   };
 
   // 編輯中的紀錄 id；null＝目前是新增模式
