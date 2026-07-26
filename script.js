@@ -832,9 +832,9 @@ function LayoutZone({ db, setDB, month, setMonth, toast }) {
   const [overrideStoreId, setOverrideStoreId] = useState(""); // 目前展開「轉檔設定」的店鋪 id
   const [overrideForm, setOverrideForm] = useState({ sheetName: "", range: "" });
   const [overrideBusy, setOverrideBusy] = useState(false);
-  const [overrideSheetOptions, setOverrideSheetOptions] = useState([]); // 該店 Excel 原檔實際的分頁名稱清單
-  const [overrideSheetLoading, setOverrideSheetLoading] = useState(false);
   const brand = db.brands.find((b) => b.id === brandId);
+  // Layout Excel 固定就三種分頁畫法（賣場+倉庫合併／賣場單獨／倉庫單獨），命名規則是「{品牌}-{畫法}LAYOUT」，直接列出這三項給選，不用讀檔
+  const overrideSheetOptions = brand ? ["賣場+倉庫LAYOUT", "賣場LAYOUT", "倉庫LAYOUT"].map((s) => `${brand.name}-${s}`) : [];
 
   const layoutOf = (storeId) => (db.layouts || []).find((l) => l.storeId === storeId && l.month === month);
   const overrideOf = (storeId) => (db.layoutOverrides || []).find((o) => o.storeId === storeId && o.month === month);
@@ -842,10 +842,9 @@ function LayoutZone({ db, setDB, month, setMonth, toast }) {
   // 轉檔設定：少數店鋪的 Layout Excel 畫法跟大多數店不一樣（例如分成兩張獨立分頁畫，而不是畫在同一張
   // 「賣場+倉庫」合併分頁），導致自動判斷抓到幾乎空白的錯分頁，或抓的列印範圍不完整。這裡讓管理者手動
   // 指定該店該月份要轉檔的分頁名稱／列印範圍，兩者皆留空即恢復自動判斷。
-  // 分頁名稱改用讀出來的實際分頁清單做選單（避免手key打錯字，也不用記分頁名稱裡的空白）；
   // 列印範圍預設帶出「目前沒有例外設定時實際會用到」的範圍（該店上傳時偵測到的 Print_Area），
   // 而不是空白，方便使用者直接看到現況、只在真的需要調整時才動它。
-  const toggleOverride = async (store) => {
+  const toggleOverride = (store) => {
     if (overrideStoreId === store.id) { setOverrideStoreId(""); return; }
     const l = layoutOf(store.id);
     const existing = overrideOf(store.id);
@@ -853,19 +852,7 @@ function LayoutZone({ db, setDB, month, setMonth, toast }) {
       sheetName: existing ? existing.sheetName || "" : "",
       range: existing && existing.range ? existing.range : (l ? l.printRange || "" : ""),
     });
-    setOverrideSheetOptions([]);
     setOverrideStoreId(store.id);
-    if (l) {
-      setOverrideSheetLoading(true);
-      try {
-        const names = await InventoryAPI.getLayoutSheetNames(l.fileUrl);
-        setOverrideSheetOptions(names);
-      } catch (err) {
-        toast("讀取分頁清單失敗：" + (err && err.message ? err.message : "請確認網路"));
-      } finally {
-        setOverrideSheetLoading(false);
-      }
-    }
   };
 
   const saveOverride = async (store) => {
@@ -1042,15 +1029,11 @@ function LayoutZone({ db, setDB, month, setMonth, toast }) {
                         <div className="flex flex-wrap gap-3 items-end">
                           <div>
                             <label className="block text-xs text-slate-500 mb-1">要轉換的分頁名稱</label>
-                            {overrideSheetLoading ? (
-                              <div className="px-3 py-1.5 text-sm text-slate-400 w-56">讀取分頁清單中…</div>
-                            ) : (
-                              <select value={overrideForm.sheetName} onChange={(e) => setOverrideForm((f) => ({ ...f, sheetName: e.target.value }))}
-                                className="px-3 py-1.5 border border-slate-300 rounded-lg text-sm w-56 bg-white">
-                                <option value="">{autoDetected ? `自動判斷（目前：${autoDetected}）` : "自動判斷"}</option>
-                                {overrideSheetOptions.map((n) => <option key={n} value={n}>{n}</option>)}
-                              </select>
-                            )}
+                            <select value={overrideForm.sheetName} onChange={(e) => setOverrideForm((f) => ({ ...f, sheetName: e.target.value }))}
+                              className="px-3 py-1.5 border border-slate-300 rounded-lg text-sm w-56 bg-white">
+                              <option value="">{autoDetected ? `自動判斷（目前：${autoDetected}）` : "自動判斷"}</option>
+                              {overrideSheetOptions.map((n) => <option key={n} value={n}>{n}</option>)}
+                            </select>
                           </div>
                           <div>
                             <label className="block text-xs text-slate-500 mb-1">列印範圍</label>
@@ -1101,16 +1084,13 @@ function FillZone({ db, setDB, month, setMonth, user, toast }) {
   // 換月：店鋪名單會變，清空已選店鋪與其帶出的日期／人數
   const onMonthChange = (v) => { setMonth(v); setForm((f) => ({ ...f, storeId: "", date: "", headcount: "" })); };
 
-  // 選店鋪：盤點日期帶店鋪名單上的盤點日期；盤點人數帶「盤點人員名單」中與該店同一主責課的人數（皆可手動調整）
+  // 選店鋪：盤點日期、盤點人數皆帶店鋪名單上登記的值（皆可再手動調整）
   const onStore = (v) => {
     const store = db.stores.find((s) => s.id === v);
-    const staffCount = store && store.dept
-      ? db.staff.filter((p) => p.brandId === form.brandId && p.month === month && p.dept === store.dept).length
-      : 0;
     setForm((f) => ({
       ...f, storeId: v,
       date: store ? auditDateToInput(store.auditDate) : "",
-      headcount: staffCount > 0 ? String(staffCount) : "",
+      headcount: store && store.headcount ? String(store.headcount) : "",
     }));
   };
 
@@ -1158,10 +1138,11 @@ function FillZone({ db, setDB, month, setMonth, user, toast }) {
     setSaving(true);
     toast("儲存中…");
     try {
+      const brandName = (db.brands.find((b) => b.id === form.brandId) || {}).name || "";
       const photos = [];
       for (const p of form.photos) {
-        const url = await InventoryAPI.uploadPhoto(p.dataUrl, p.name);
-        photos.push(InventoryAPI.cloud() ? { name: p.name, url } : { name: p.name });
+        const url = await InventoryAPI.uploadPhoto(p.dataUrl, p.name, brandName);
+        photos.push(InventoryAPI.cloud() ? { name: p.name, url } : { name: p.name, url: p.dataUrl });
       }
       const rec = {
         id: uid("R"), brandId: form.brandId, storeId: form.storeId, month,
@@ -1192,6 +1173,33 @@ function FillZone({ db, setDB, month, setMonth, user, toast }) {
       return { ...r, brandName: brand ? brand.name : "", storeName: store ? store.name : "", storeCode: store ? store.code : "", dept: store ? store.dept : "", piecesNum: num(r.pieces) };
     });
   const myRecords = allRecords.filter((r) => matchFilters(r, filters));
+
+  // 單店查看照片
+  const [viewRecord, setViewRecord] = useState(null);
+
+  // 打包下載本月全部紙本報表照片：依「盤點日期_店名」分資料夾，同資料夾若真的撞檔名才加 -1/-2
+  const [photosBusy, setPhotosBusy] = useState(false);
+  const bulkDownloadPhotos = async () => {
+    const entries = [];
+    allRecords.forEach((r) => (r.photos || []).forEach((p) => {
+      if (p.url) entries.push({ fileUrl: p.url, fileName: p.name, date: r.date, storeName: r.storeName });
+    }));
+    if (entries.length === 0) { toast("本月尚無紙本報表照片"); return; }
+    const seen = {};
+    const list = entries.map((item) => {
+      const folder = String(`${item.date || "未分類日期"}_${item.storeName || ""}`).replace(/[\/\\]/g, "-");
+      const dot = item.fileName.lastIndexOf(".");
+      const base = dot >= 0 ? item.fileName.slice(0, dot) : item.fileName;
+      const ext = dot >= 0 ? item.fileName.slice(dot) : "";
+      let name = item.fileName, n = 1;
+      while (seen[`${folder}/${name}`]) { name = `${base}-${n}${ext}`; n++; }
+      seen[`${folder}/${name}`] = true;
+      return { fileUrl: item.fileUrl, fileName: `${folder}/${name}` };
+    });
+    setPhotosBusy(true);
+    try { await bulkDownloadFiles(list, `紙本報表照片_${month}`, toast); }
+    finally { setPhotosBusy(false); }
+  };
 
   // 儀表板統計：以表單目前選的品牌為範圍；母體只算主店（分倉是同一實體店的虛擬切分，作業紀錄一場只填一筆）；「已填」＝該店本月已有任一筆盤點紀錄
   const dashBrand = db.brands.find((b) => b.id === form.brandId);
@@ -1302,6 +1310,12 @@ function FillZone({ db, setDB, month, setMonth, user, toast }) {
       </SectionCard>
 
       <SectionCard title="🗂 本月盤點作業紀錄" subtitle={`${month} 共 ${myRecords.length} 筆（各欄用選單篩選）`}>
+        <div className="flex justify-end mb-3">
+          <button onClick={bulkDownloadPhotos} disabled={photosBusy}
+            className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-400 text-white text-sm rounded-lg">
+            {photosBusy ? "打包中…" : "⬇ 打包下載全部紙本照片"}
+          </button>
+        </div>
         <div className="table-scroll">
           <table className="w-full text-sm whitespace-nowrap">
             <thead>
@@ -1310,7 +1324,7 @@ function FillZone({ db, setDB, month, setMonth, user, toast }) {
                 <th className="py-2 pr-4">盤點人數</th><th className="py-2 pr-4">實盤件數</th>
                 <th className="py-2 pr-4">進店</th><th className="py-2 pr-4">存貨開始</th><th className="py-2 pr-4">存貨結束</th>
                 <th className="py-2 pr-4">找差異開始</th><th className="py-2 pr-4">找差異結束</th><th className="py-2 pr-4">離店</th>
-                <th className="py-2 pr-4">特殊狀況</th><th className="py-2 pr-4">填寫人</th>
+                <th className="py-2 pr-4">特殊狀況</th><th className="py-2 pr-4">填寫人</th><th className="py-2 pr-4">紙本照片</th>
               </tr>
               <tr className="border-b">
                 <th className="py-1 pr-4"><FilterSelect value={filters.date} onChange={(v) => setFilt("date", v)} options={distinctVals(allRecords, "date")} /></th>
@@ -1322,6 +1336,7 @@ function FillZone({ db, setDB, month, setMonth, user, toast }) {
                 <th colSpan="6"></th>
                 <th className="py-1 pr-4"><FilterSelect value={filters.special} onChange={(v) => setFilt("special", v)} options={distinctVals(allRecords, "special")} /></th>
                 <th className="py-1 pr-4"><FilterSelect value={filters.filledBy} onChange={(v) => setFilt("filledBy", v)} options={distinctVals(allRecords, "filledBy")} /></th>
+                <th></th>
               </tr>
             </thead>
             <tbody>
@@ -1341,13 +1356,36 @@ function FillZone({ db, setDB, month, setMonth, user, toast }) {
                   <td className="py-2 pr-4 font-mono">{r.leaveTime || "—"}</td>
                   <td className="py-2 pr-4 max-w-[200px] truncate" title={r.special}>{r.special || "—"}</td>
                   <td className="py-2 pr-4">{r.filledBy}</td>
+                  <td className="py-2 pr-4">
+                    {(r.photos || []).length > 0
+                      ? <button onClick={() => setViewRecord(r)} className="text-blue-600 hover:underline">查看（{r.photos.length}）</button>
+                      : "—"}
+                  </td>
                 </tr>
               ))}
-              {myRecords.length === 0 && <tr><td colSpan="14" className="py-6 text-center text-slate-400">查無符合條件的紀錄</td></tr>}
+              {myRecords.length === 0 && <tr><td colSpan="15" className="py-6 text-center text-slate-400">查無符合條件的紀錄</td></tr>}
             </tbody>
           </table>
         </div>
       </SectionCard>
+
+      {viewRecord && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" onClick={() => setViewRecord(null)}>
+          <div className="bg-white rounded-xl p-4 max-w-3xl max-h-[85vh] overflow-auto" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-3">
+              <div className="font-medium text-slate-700">{viewRecord.storeName}（{viewRecord.date}）紙本報表照片</div>
+              <button onClick={() => setViewRecord(null)} className="text-slate-400 hover:text-slate-600 text-lg leading-none">✕</button>
+            </div>
+            <div className="flex flex-wrap gap-3">
+              {(viewRecord.photos || []).map((p, i) => (
+                <a key={i} href={p.url} target="_blank" rel="noreferrer">
+                  <img src={p.url} alt={p.name} className="h-40 rounded-lg border border-slate-200 object-cover" />
+                </a>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -2197,7 +2235,7 @@ function MaintainZone({ db, setDB, month, setMonth, toast }) {
   const [brandId, setBrandId] = useState(db.brands[0]?.id || "");
   const [tab, setTab] = useState("stores");
   const [newBrand, setNewBrand] = useState("");
-  const [storeForm, setStoreForm] = useState({ code: "", name: "", dept: "", category: "", enName: "", warehouse: "", auditDate: "" });
+  const [storeForm, setStoreForm] = useState({ code: "", name: "", dept: "", category: "", enName: "", warehouse: "", auditDate: "", headcount: "" });
   const [staffForm, setStaffForm] = useState({ div: "", dept: "", empNo: "", name: "", title: "" });
   const [sFilters, setSFilters] = useState({});   // 店鋪篩選
   const [pFilters, setPFilters] = useState({});   // 人員篩選
@@ -2222,8 +2260,8 @@ function MaintainZone({ db, setDB, month, setMonth, toast }) {
 
   const addStore = () => {
     if (!storeForm.code.trim() || !storeForm.name.trim()) { toast("店鋪代碼與名稱皆為必填"); return; }
-    setDB((d) => ({ ...d, stores: [...d.stores, { id: uid("S"), brandId, month, code: storeForm.code.trim(), name: storeForm.name.trim(), dept: storeForm.dept.trim(), category: storeForm.category.trim(), enName: storeForm.enName.trim(), warehouse: storeForm.warehouse.trim(), auditDate: storeForm.auditDate.trim() }] }));
-    setStoreForm({ code: "", name: "", dept: "", category: "", enName: "", warehouse: "", auditDate: "" });
+    setDB((d) => ({ ...d, stores: [...d.stores, { id: uid("S"), brandId, month, code: storeForm.code.trim(), name: storeForm.name.trim(), dept: storeForm.dept.trim(), category: storeForm.category.trim(), enName: storeForm.enName.trim(), warehouse: storeForm.warehouse.trim(), auditDate: storeForm.auditDate.trim(), headcount: storeForm.headcount.trim() }] }));
+    setStoreForm({ code: "", name: "", dept: "", category: "", enName: "", warehouse: "", auditDate: "", headcount: "" });
     toast("店鋪已新增 ✔");
   };
 
@@ -2236,14 +2274,14 @@ function MaintainZone({ db, setDB, month, setMonth, toast }) {
 
   // 匯入範本欄位
   const TEMPLATES = {
-    stores: ["店鋪代碼", "店鋪名稱", "主責課", "店鋪種類", "英文店名", "倉別量", "盤點日期", "分倉英文店名（多個用逗號分隔）"],
+    stores: ["店鋪代碼", "店鋪名稱", "主責課", "店鋪種類", "英文店名", "倉別量", "盤點日期", "人數", "分倉英文店名（多個用逗號分隔）"],
     staff: ["部別", "課別", "工號", "姓名", "職稱"],
   };
   // 下載匯入範本（Excel）
   const downloadTemplate = (kind) => {
     const label = kind === "stores" ? "店鋪名單" : "盤點人員名單";
     exportXLSX(`${label}_匯入範本.xlsx`, label, [TEMPLATES[kind], kind === "stores"
-      ? ["TO006", "華泰名品城", "桃竹課", "Outlet", "華泰名品城", "4", "2026-01-06", "Gloria_Destroy,Gloria_Family Sale,GLORIA_Temp Store"]
+      ? ["TO006", "華泰名品城", "桃竹課", "Outlet", "華泰名品城", "4", "2026-01-06", "2", "Gloria_Destroy,Gloria_Family Sale,GLORIA_Temp Store"]
       : ["一部", "北一課", "E001", "範例姓名", "資深專員"]]);
     toast(`已下載${label}匯入範本`);
   };
@@ -2267,6 +2305,7 @@ function MaintainZone({ db, setDB, month, setMonth, toast }) {
         const hEn = headers.find((h) => /英文/.test(String(h)) && !/分倉/.test(String(h))) || findH(/enName/i);
         const hWh = findH(/倉別量|倉別|warehouse/i);
         const hAudit = findH(/盤點日期|日期|date/i);
+        const hCount = findH(/人數|盤點人數|headcount/i);
         const hSubEn = findH(/分倉.*英文|分倉店名|sub.*en/i); // 多倉別：主店一列填多個客戶檔英文名(逗號分隔)，自動展開成分倉列
         const get = (r, h) => h ? String(r[h] == null ? "" : r[h]).trim() : "";
         const splitSub = (v) => v.split(/[,，;；]/).map((s) => s.trim()).filter(Boolean);
@@ -2279,6 +2318,7 @@ function MaintainZone({ db, setDB, month, setMonth, toast }) {
         const raw = rows.map((r) => ({
           code: get(r, hCode), name: get(r, hName), div: get(r, hDiv), dept: get(r, hDept),
           category: get(r, hCat), enName: get(r, hEn), warehouse: get(r, hWh), auditDate: get(r, hAudit),
+          headcount: get(r, hCount),
           subEn: hSubEn ? get(r, hSubEn) : "",
         })).filter((x) => x.code || x.name);
 
@@ -2286,7 +2326,7 @@ function MaintainZone({ db, setDB, month, setMonth, toast }) {
         const items = [];
         raw.forEach((x) => {
           const mainCode = x.code || x.name, mainName = x.name || x.code;
-          items.push({ id: uid("S"), brandId, month, code: mainCode, name: mainName, div: x.div, dept: x.dept, category: x.category, enName: x.enName, warehouse: x.warehouse, auditDate: x.auditDate, srcFile: f.name });
+          items.push({ id: uid("S"), brandId, month, code: mainCode, name: mainName, div: x.div, dept: x.dept, category: x.category, enName: x.enName, warehouse: x.warehouse, auditDate: x.auditDate, headcount: x.headcount, srcFile: f.name });
           splitSub(x.subEn).forEach((subEnName, i) => {
             subCount++;
             items.push({
@@ -2294,7 +2334,7 @@ function MaintainZone({ db, setDB, month, setMonth, toast }) {
               code: `${mainCode}-${i + 1}`,
               name: `${mainName}_${subSuffix(subEnName)}`,
               div: x.div, dept: x.dept, category: x.category,
-              enName: subEnName, warehouse: "1", auditDate: x.auditDate, srcFile: f.name,
+              enName: subEnName, warehouse: "1", auditDate: x.auditDate, headcount: x.headcount, srcFile: f.name,
               isSub: true, parentCode: mainCode, // 標記為分倉：Layout 區等「只列主店」的畫面會排除這些列
             });
           });
@@ -2399,6 +2439,7 @@ function MaintainZone({ db, setDB, month, setMonth, toast }) {
             <input placeholder="英文店名（對應客戶檔）" value={storeForm.enName} onChange={(e) => setStoreForm({ ...storeForm, enName: e.target.value })} className={inputCls + " w-48"} />
             <input placeholder="倉別量" value={storeForm.warehouse} onChange={(e) => setStoreForm({ ...storeForm, warehouse: e.target.value })} className={inputCls + " w-20"} />
             <input placeholder="盤點日期" value={storeForm.auditDate} onChange={(e) => setStoreForm({ ...storeForm, auditDate: e.target.value })} className={inputCls + " w-28"} />
+            <input placeholder="人數" value={storeForm.headcount} onChange={(e) => setStoreForm({ ...storeForm, headcount: e.target.value })} className={inputCls + " w-16"} />
             <button onClick={addStore} className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm rounded-lg">＋ 單筆新增</button>
             <button onClick={clearStores} className="px-4 py-2 border border-red-400 text-red-500 hover:bg-red-50 text-sm rounded-lg">🗑 清除本月名單</button>
           </div>
@@ -2407,7 +2448,7 @@ function MaintainZone({ db, setDB, month, setMonth, toast }) {
               <thead>
                 <tr className="text-left text-slate-500 border-b">
                   <th className="py-2 pr-4">代碼</th><th className="py-2 pr-4">名稱</th><th className="py-2 pr-4">主責課</th>
-                  <th className="py-2 pr-4">店鋪種類</th><th className="py-2 pr-4">英文店名</th><th className="py-2 pr-4">倉別量</th><th className="py-2 pr-4">盤點日期</th><th className="py-2 pr-4">操作</th>
+                  <th className="py-2 pr-4">店鋪種類</th><th className="py-2 pr-4">英文店名</th><th className="py-2 pr-4">倉別量</th><th className="py-2 pr-4">盤點日期</th><th className="py-2 pr-4">人數</th><th className="py-2 pr-4">操作</th>
                 </tr>
                 <tr className="border-b">
                   <th className="py-1 pr-4"><FilterSelect value={sFilters.code} onChange={(v) => setSF("code", v)} options={distinctVals(baseStores, "code")} /></th>
@@ -2417,6 +2458,7 @@ function MaintainZone({ db, setDB, month, setMonth, toast }) {
                   <th className="py-1 pr-4"><FilterSelect value={sFilters.enName} onChange={(v) => setSF("enName", v)} options={distinctVals(baseStores, "enName")} /></th>
                   <th className="py-1 pr-4"><FilterSelect value={sFilters.warehouse} onChange={(v) => setSF("warehouse", v)} options={distinctVals(baseStores, "warehouse")} /></th>
                   <th className="py-1 pr-4"><FilterSelect value={sFilters.auditDate} onChange={(v) => setSF("auditDate", v)} options={distinctVals(baseStores, "auditDate")} /></th>
+                  <th className="py-1 pr-4"><FilterSelect value={sFilters.headcount} onChange={(v) => setSF("headcount", v)} options={distinctVals(baseStores, "headcount")} /></th>
                   <th></th>
                 </tr>
               </thead>
@@ -2424,11 +2466,11 @@ function MaintainZone({ db, setDB, month, setMonth, toast }) {
                 {stores.map((s) => (
                   <tr key={s.id} className="border-b last:border-0">
                     <td className="py-2 pr-4 font-mono">{s.code}</td><td className="py-2 pr-4">{s.name}</td><td className="py-2 pr-4">{s.dept || "—"}</td>
-                    <td className="py-2 pr-4">{s.category || "—"}</td><td className="py-2 pr-4">{s.enName || "—"}</td><td className="py-2 pr-4">{s.warehouse || "—"}</td><td className="py-2 pr-4">{s.auditDate || "—"}</td>
+                    <td className="py-2 pr-4">{s.category || "—"}</td><td className="py-2 pr-4">{s.enName || "—"}</td><td className="py-2 pr-4">{s.warehouse || "—"}</td><td className="py-2 pr-4">{s.auditDate || "—"}</td><td className="py-2 pr-4">{s.headcount || "—"}</td>
                     <td className="py-2 pr-4"><button onClick={() => removeStore(s.id)} className="text-red-500 hover:underline">刪除</button></td>
                   </tr>
                 ))}
-                {stores.length === 0 && <tr><td colSpan="8" className="py-6 text-center text-slate-400">查無店鋪，請匯入或新增</td></tr>}
+                {stores.length === 0 && <tr><td colSpan="9" className="py-6 text-center text-slate-400">查無店鋪，請匯入或新增</td></tr>}
               </tbody>
             </table>
           </div>

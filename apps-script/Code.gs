@@ -53,7 +53,7 @@ function doPost(e) {
       case "upsertRow":
         return jsonOut(upsertRow(body.tab, body.keyFields, body.row));
       case "uploadPhoto":
-        return jsonOut({ ok: true, url: uploadPhoto(body.dataUrl, body.filename) });
+        return jsonOut({ ok: true, url: uploadPhoto(body.dataUrl, body.filename, body.brandName) });
       case "uploadManual":
         return jsonOut({ ok: true, url: uploadManual(body.dataUrl, body.filename, body.brandName) });
       case "uploadLayout":
@@ -66,8 +66,6 @@ function doPost(e) {
         return jsonOut(zipFiles(body.files, body.zipName, body.asLayoutPdf));
       case "layoutPdf":
         return jsonOut(layoutPdf(body.fileUrl, body.fileName, body.printRange, body.storeId, body.month));
-      case "getLayoutSheetNames":
-        return jsonOut(getLayoutSheetNames(body.fileUrl));
       case "putMaster":
         putMaster(body.rec);
         return jsonOut({ ok: true });
@@ -213,8 +211,8 @@ function uploadToDrive(folder, dataUrl, filename, isAllowedType, maxBytes, rejec
   return "https://drive.google.com/uc?id=" + file.getId();
 }
 
-function uploadPhoto(dataUrl, filename) {
-  var folder = DriveApp.getFolderById(PHOTO_FOLDER_ID);
+function uploadPhoto(dataUrl, filename, brandName) {
+  var folder = getBrandSubfolder(brandName, "紙本報表照片");
   return uploadToDrive(folder, dataUrl, filename, function (ct) { return ct.indexOf("image/") === 0; }, MAX_PHOTO_BYTES, "僅允許上傳影像檔");
 }
 
@@ -307,22 +305,6 @@ function importXlsxToGoogleSheet(blob, title) {
     return Drive.Files.insert({ title: title, mimeType: MimeType.GOOGLE_SHEETS }, blob, { convert: true }).id;
   }
   return Drive.Files.create({ name: title, mimeType: MimeType.GOOGLE_SHEETS }, blob).id;
-}
-
-// 讀出 Layout Excel 原檔實際有哪些分頁（供前端「轉檔設定」畫面做成選單，讓使用者從真正存在的分頁挑，不用手key分頁名稱）。
-// 作法跟 layoutExcelToPdf 一樣先暫時匯入成 Google 試算表，只是這裡只要分頁名稱清單，不用轉 PDF，讀完就把暫存檔丟掉。
-function getLayoutSheetNames(fileUrl) {
-  var id = extractDriveId(fileUrl);
-  if (!id) return { error: "找不到檔案" };
-  var xlsxFile = DriveApp.getFileById(id);
-  var ssId = importXlsxToGoogleSheet(xlsxFile.getBlob(), "_tmp_sheetnames_" + id);
-  try {
-    var ss = SpreadsheetApp.openById(ssId);
-    var names = ss.getSheets().map(function (s) { return s.getName(); });
-    return { ok: true, names: names };
-  } finally {
-    try { DriveApp.getFileById(ssId).setTrashed(true); } catch (e) {}
-  }
 }
 
 // 把 "A1:Q33" 這種 A1 記號範圍字串轉成 export URL 用的 {r1,c1,r2,c2}（0-based 起點、計數式終點）；解析不出來回傳 null

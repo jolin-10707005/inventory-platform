@@ -136,10 +136,10 @@ const InventoryAPI = {
     if (j.error) throw new Error(j.error);
   },
 
-  /** 上傳照片。本機模式直接回傳 base64；雲端模式存進 Drive 並回傳檔案連結 */
-  async uploadPhoto(dataUrl, filename) {
+  /** 上傳紙本報表照片（存進該品牌的「紙本報表照片」資料夾）。本機模式直接回傳 base64；雲端模式存進 Drive 並回傳檔案連結 */
+  async uploadPhoto(dataUrl, filename, brandName) {
     if (!this.cloud()) return dataUrl;
-    const j = await this._post({ action: "uploadPhoto", dataUrl, filename });
+    const j = await this._post({ action: "uploadPhoto", dataUrl, filename, brandName });
     return j.url;
   },
 
@@ -172,14 +172,6 @@ const InventoryAPI = {
     const j = await this._post({ action: "layoutPdf", fileUrl, fileName, printRange, storeId, month });
     if (j.error) throw new Error(j.error);
     return { filename: j.filename, base64: j.base64 };
-  },
-
-  /** 讀出 Layout Excel 原檔實際有哪些分頁（供「轉檔設定」畫面做成選單）。本機模式沒有後端可轉，回傳空陣列 */
-  async getLayoutSheetNames(fileUrl) {
-    if (!this.cloud()) return [];
-    const j = await this._post({ action: "getLayoutSheetNames", fileUrl });
-    if (j.error) throw new Error(j.error);
-    return j.names || [];
   },
 
   /** 刪除單一 Drive 檔案（重新上傳同店同月份的 Layout圖／盤點總表後，清掉被取代的舊檔，避免孤兒檔案累積）。
