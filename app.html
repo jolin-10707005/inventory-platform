@@ -8,6 +8,9 @@
   <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
   <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
   <script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
+  <!-- JSZip：SheetJS 免費版無法在產生 Excel 時寫入儲存格樣式（填色/粗體/邊框），改用 JSZip 事後直接
+       修改 xlsx 內部的 styles.xml／sheetN.xml（兩者都是標準 OOXML XML）補上樣式再重新打包 -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
   <link rel="stylesheet" href="style.css">
 </head>
 <body class="bg-slate-100 min-h-screen">
@@ -21,7 +24,7 @@
     // 瀏覽器直接執行、不用再即時轉譯 JSX，省掉每個訪客瀏覽器都要重跑一次的解析＋轉譯成本。
     // 改 script.js 後務必重新編譯才能推送新版（見 script.js 開頭說明）。
     (function () {
-      var v = "40";
+      var v = "41";
       var s1 = document.createElement('script');
       s1.src = 'api.js?v=' + v;
       s1.onload = function () {

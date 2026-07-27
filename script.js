@@ -197,6 +197,169 @@ function withThousands(matrix, cols) {
   });
 }
 
+/* ============================================================
+ * 匯出樣式後製：SheetJS 免費版沒辦法在產生 Excel 時寫入儲存格樣式（填色/粗體/邊框），
+ * 改用 JSZip 把產出的 .xlsx（本質是 zip，裡面裝的是標準 OOXML XML）解開，直接修改
+ * xl/styles.xml（補上表頭底色/粗體字型/細框線的樣式定義）跟目標分頁的 xl/worksheets/sheetN.xml
+ * （把每個儲存格指到新樣式），再重新打包。原本的公式/數值/數字格式完全不動，Excel 開檔看不出差異。
+ * ============================================================ */
+
+// 在 styles.xml 補上「表頭樣式」「資料格樣式」兩組新樣式，各自對應每個原有樣式再疊加邊框（表頭再疊加底色+粗體）。
+// 回傳 { xml: 修改後的 styles.xml 字串, headerXfFor(舊樣式索引), dataXfFor(舊樣式索引) } 兩個轉換函式，
+// 讓呼叫端可以把儲存格原本的樣式（例如千分位數字格式）對應到「一樣的數字格式＋新增邊框」的新樣式，不會蓋掉原本格式。
+function injectXlsxStyles(stylesXmlText, headerFillRgb) {
+  const NS = "http://schemas.openxmlformats.org/spreadsheetml/2006/main";
+  const doc = new DOMParser().parseFromString(stylesXmlText, "application/xml");
+  const fonts = doc.getElementsByTagNameNS(NS, "fonts")[0];
+  const fills = doc.getElementsByTagNameNS(NS, "fills")[0];
+  const borders = doc.getElementsByTagNameNS(NS, "borders")[0];
+  const cellXfs = doc.getElementsByTagNameNS(NS, "cellXfs")[0];
+
+  const fontIdx = fonts.getElementsByTagNameNS(NS, "font").length;
+  const boldFont = doc.createElementNS(NS, "font");
+  boldFont.appendChild(doc.createElementNS(NS, "b"));
+  const sz = doc.createElementNS(NS, "sz"); sz.setAttribute("val", "12"); boldFont.appendChild(sz);
+  const fname = doc.createElementNS(NS, "name"); fname.setAttribute("val", "Calibri"); boldFont.appendChild(fname);
+  fonts.appendChild(boldFont);
+  fonts.setAttribute("count", String(fontIdx + 1));
+
+  const fillIdx = fills.getElementsByTagNameNS(NS, "fill").length;
+  const headerFill = doc.createElementNS(NS, "fill");
+  const pf = doc.createElementNS(NS, "patternFill"); pf.setAttribute("patternType", "solid");
+  const fg = doc.createElementNS(NS, "fgColor"); fg.setAttribute("rgb", "FF" + headerFillRgb);
+  const bg = doc.createElementNS(NS, "bgColor"); bg.setAttribute("indexed", "64");
+  pf.appendChild(fg); pf.appendChild(bg); headerFill.appendChild(pf);
+  fills.appendChild(headerFill);
+  fills.setAttribute("count", String(fillIdx + 1));
+
+  const borderIdx = borders.getElementsByTagNameNS(NS, "border").length;
+  const thinBorder = doc.createElementNS(NS, "border");
+  ["left", "right", "top", "bottom", "diagonal"].forEach((side) => {
+    const el = doc.createElementNS(NS, side);
+    if (side !== "diagonal") el.setAttribute("style", "thin");
+    thinBorder.appendChild(el);
+  });
+  borders.appendChild(thinBorder);
+  borders.setAttribute("count", String(borderIdx + 1));
+
+  const xfList = Array.from(cellXfs.getElementsByTagNameNS(NS, "xf"));
+  const baseCount = xfList.length;
+  const dataXfIds = xfList.map((_, i) => baseCount + i);
+  const headerXfIds = xfList.map((_, i) => baseCount + xfList.length + i);
+  xfList.forEach((xf) => {
+    const dataXf = xf.cloneNode(false);
+    dataXf.setAttribute("borderId", String(borderIdx));
+    dataXf.setAttribute("applyBorder", "1");
+    cellXfs.appendChild(dataXf);
+  });
+  xfList.forEach((xf) => {
+    const headerXf = xf.cloneNode(false);
+    headerXf.setAttribute("borderId", String(borderIdx));
+    headerXf.setAttribute("applyBorder", "1");
+    headerXf.setAttribute("fillId", String(fillIdx));
+    headerXf.setAttribute("applyFill", "1");
+    headerXf.setAttribute("fontId", String(fontIdx));
+    headerXf.setAttribute("applyFont", "1");
+    cellXfs.appendChild(headerXf);
+  });
+  cellXfs.setAttribute("count", String(baseCount + dataXfIds.length + headerXfIds.length));
+
+  return {
+    xml: new XMLSerializer().serializeToString(doc),
+    dataXfFor: (origIdx) => dataXfIds[origIdx] ?? dataXfIds[0],
+    headerXfFor: (origIdx) => headerXfIds[origIdx] ?? headerXfIds[0],
+  };
+}
+
+// 幫某個分頁的 XML 補齊「表頭列」「資料範圍」每一格的樣式索引；範圍內原本沒有內容的儲存格（例如刻意留空給公式當 0
+// 用的協盤課人數欄）也會補上一個「只有樣式、沒有值」的空儲存格好畫出格線，不會影響它在公式裡還是被當空白（0）。
+function styleSheetXml(sheetXmlText, { headerRows, xfMap, maxRow, maxCol }) {
+  const NS = "http://schemas.openxmlformats.org/spreadsheetml/2006/main";
+  const doc = new DOMParser().parseFromString(sheetXmlText, "application/xml");
+  const sheetData = doc.getElementsByTagNameNS(NS, "sheetData")[0];
+  const existingRows = {};
+  Array.from(sheetData.getElementsByTagNameNS(NS, "row")).forEach((r) => { existingRows[Number(r.getAttribute("r"))] = r; });
+
+  for (let rowNum = 1; rowNum <= maxRow; rowNum++) {
+    let rowEl = existingRows[rowNum];
+    const existingCells = {};
+    if (rowEl) {
+      Array.from(rowEl.getElementsByTagNameNS(NS, "c")).forEach((c) => {
+        const m = (c.getAttribute("r") || "").match(/^([A-Z]+)/);
+        if (m) existingCells[XLSX.utils.decode_col(m[1])] = c;
+      });
+      while (rowEl.firstChild) rowEl.removeChild(rowEl.firstChild); // 清空，下面依欄序重新加回去
+    } else {
+      rowEl = doc.createElementNS(NS, "row");
+      rowEl.setAttribute("r", String(rowNum));
+      sheetData.appendChild(rowEl);
+    }
+    const isHeader = headerRows.includes(rowNum);
+    for (let colIdx = 0; colIdx <= maxCol; colIdx++) {
+      let cEl = existingCells[colIdx];
+      const curS = cEl ? Number(cEl.getAttribute("s") || 0) : 0;
+      const newS = isHeader ? xfMap.headerXfFor(curS) : xfMap.dataXfFor(curS);
+      if (!cEl) {
+        cEl = doc.createElementNS(NS, "c");
+        cEl.setAttribute("r", XLSX.utils.encode_cell({ r: rowNum - 1, c: colIdx }));
+      }
+      cEl.setAttribute("s", String(newS));
+      rowEl.appendChild(cEl);
+    }
+  }
+  // 新增的列是直接補在最後，這裡依列號重新排序（appendChild 對已存在的子節點等同「移到最後」，依序呼叫即完成排序）
+  Array.from(sheetData.getElementsByTagNameNS(NS, "row"))
+    .sort((a, b) => Number(a.getAttribute("r")) - Number(b.getAttribute("r")))
+    .forEach((r) => sheetData.appendChild(r));
+  return new XMLSerializer().serializeToString(doc);
+}
+
+// 依 xl/workbook.xml + xl/_rels/workbook.xml.rels 建立「分頁名稱 → xl/worksheets/sheetN.xml 路徑」的對照表
+async function getSheetFileMap(zip) {
+  const wbXml = await zip.file("xl/workbook.xml").async("string");
+  const relsXml = await zip.file("xl/_rels/workbook.xml.rels").async("string");
+  const wbDoc = new DOMParser().parseFromString(wbXml, "application/xml");
+  const relsDoc = new DOMParser().parseFromString(relsXml, "application/xml");
+  const relTarget = {};
+  Array.from(relsDoc.getElementsByTagName("Relationship")).forEach((r) => { relTarget[r.getAttribute("Id")] = r.getAttribute("Target"); });
+  const map = {};
+  Array.from(wbDoc.getElementsByTagName("sheet")).forEach((s) => {
+    const rId = s.getAttribute("r:id");
+    const target = relTarget[rId];
+    if (target) map[s.getAttribute("name")] = "xl/" + target;
+  });
+  return map;
+}
+
+// 主流程：把 XLSX.write 產出的 array buffer 解開，補上樣式後重新打包成 Blob。
+// sheetSpecs = { 分頁名稱: { headerRows:[列號,...], maxRow, maxCol(0-based) } }，只有列在這裡的分頁會被加樣式。
+async function styleWorkbookBuffer(arrayBuffer, sheetSpecs, headerFillRgb) {
+  const zip = await JSZip.loadAsync(arrayBuffer);
+  const stylesXml = await zip.file("xl/styles.xml").async("string");
+  const xfMap = injectXlsxStyles(stylesXml, headerFillRgb || "FCE4A3");
+  zip.file("xl/styles.xml", xfMap.xml);
+
+  const fileMap = await getSheetFileMap(zip);
+  for (const sheetName of Object.keys(sheetSpecs)) {
+    const path = fileMap[sheetName];
+    const file = path && zip.file(path);
+    if (!file) continue;
+    const sheetXml = await file.async("string");
+    const styled = styleSheetXml(sheetXml, { ...sheetSpecs[sheetName], xfMap });
+    zip.file(path, styled);
+  }
+  return zip.generateAsync({ type: "blob" });
+}
+
+// 觸發瀏覽器下載一個 Blob（styleWorkbookBuffer 產出的樣式化 Excel 用這個下載，不是 base64）
+function downloadBlob(filename, blob) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
 // 標準主檔／庫存檔輸出欄位（順序、名稱需與客戶範本一致；庫存數量為數量欄）
 const MASTER_COLS = ["商品編號", "barcode", "舊商品編號2", "物品名稱", "庫存數量", "品項平均成本"];
 const QTY_COL = "庫存數量";
@@ -1991,7 +2154,7 @@ function AnalysisZone({ db, setDB, month, setMonth, toast }) {
   const osheng = isOshengBrand(db.brands.find((b) => b.id === effectiveBrandId));
 
   // 歐聖請款：依範本 3 分頁（彙總/客戶/內部），保留公式
-  const exportBillingOsheng = () => {
+  const exportBillingOsheng = async () => {
     const p = db.prices.find((x) => x.brandId === effectiveBrandId) || {};
     const unit = num(p.unitPrice) || 2.2, minC = num(p.minCharge) || 5000, whF = num(p.whFee) || 500;
     const minPieces = Math.ceil(minC / unit); // 低於此件數 → 最低收費
@@ -2117,7 +2280,18 @@ function AnalysisZone({ db, setDB, month, setMonth, toast }) {
     wsMC["!autofilter"] = { ref: `A1:H${N + 1}` };
     XLSX.utils.book_append_sheet(wb, wsMC, "請款明細(客戶)");
 
-    XLSX.writeFile(wb, `歐聖發票明細${month}-彙總.xlsx`);
+    const filename = `歐聖發票明細${month}-彙總.xlsx`;
+    try {
+      const buf = XLSX.write(wb, { bookType: "xlsx", type: "array" });
+      const styledBlob = await styleWorkbookBuffer(buf, {
+        "請款明細(彙總)": { headerRows: [1], maxRow: N + 2, maxCol: 21 }, // A~V 共22欄，0-based 索引到21
+        "請款明細(客戶)": { headerRows: [1], maxRow: N + 2, maxCol: 7 },  // A~H 共8欄，0-based 索引到7
+      });
+      downloadBlob(filename, styledBlob);
+    } catch (err) {
+      // 樣式後製萬一失敗，退回沒有樣式但至少能正常拿到檔案，不讓使用者連檔案都匯不出來
+      XLSX.writeFile(wb, filename);
+    }
     toast("歐聖請款（3 分頁、含公式）已匯出 ✔");
   };
 
