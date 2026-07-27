@@ -357,6 +357,25 @@ function wsFromMatrix(matrix) {
   return ws;
 }
 
+// 幫矩陣裡指定欄位（Excel 欄名，如 "D"、"G"）所有是數字的儲存格補上千分位數字格式；同一欄若某幾列其實是文字
+// （例如彙總表 C 欄大部分列是店名，只有最下面發票小計那幾列的 C 欄才是金額），文字儲存格會被自動跳過不受影響。
+// 在整份表的二維陣列建好、還沒呼叫 wsFromMatrix 前呼叫最方便，不用在每個公式建立的地方各自加 z。
+function withThousands(matrix, cols) {
+  const colIdx = cols.map(c => XLSX.utils.decode_col(c));
+  matrix.forEach(row => {
+    colIdx.forEach(ci => {
+      const cell = row[ci];
+      if (typeof cell === "number") row[ci] = {
+        v: cell,
+        z: "#,##0"
+      };else if (cell && typeof cell === "object" && !("z" in cell)) row[ci] = {
+        ...cell,
+        z: "#,##0"
+      };
+    });
+  });
+}
+
 // 標準主檔／庫存檔輸出欄位（順序、名稱需與客戶範本一致；庫存數量為數量欄）
 const MASTER_COLS = ["商品編號", "barcode", "舊商品編號2", "物品名稱", "庫存數量", "品項平均成本"];
 const QTY_COL = "庫存數量";
@@ -3253,7 +3272,12 @@ function AnalysisZone({
       } : cell);
       M.push(fixed);
     });
-    XLSX.utils.book_append_sheet(wb, wsFromMatrix(M), "請款明細(彙總)");
+    withThousands(M, ["D", "E", "F", "G", "K", "L", "N", "O", "Q", "R", "T", "U", "V", "B", "C"]);
+    const wsM = wsFromMatrix(M);
+    wsM["!autofilter"] = {
+      ref: `A1:V${N + 1}`
+    };
+    XLSX.utils.book_append_sheet(wb, wsM, "請款明細(彙總)");
 
     // 分頁二：內部（左：公司發票小計＋業務部限定發票小計；右：課別家數/金額，依既定組織順序，
     // 金額用 4-way SUMIF——一家店的請款金額可能分給主責課或最多 3 個協盤課，全部要算進該課小計）
@@ -3344,6 +3368,7 @@ function AnalysisZone({
       f: `SUM(C9:C10)`,
       v: bizSubtotalSum + Math.round(bizSubtotalSum * 0.05 * 100) / 100
     }]);
+    withThousands(MI, ["B", "C", "G", "H"]);
     XLSX.utils.book_append_sheet(wb, wsFromMatrix(MI), "請款明細(內部)");
 
     // 分頁三：客戶（A–H，同彙總欄位與公式；底部合計列＋發票小計，自己欄位加總、不跨分頁引用）
@@ -3375,7 +3400,12 @@ function AnalysisZone({
       } : cell);
       MC.push(fixed);
     });
-    XLSX.utils.book_append_sheet(wb, wsFromMatrix(MC), "請款明細(客戶)");
+    withThousands(MC, ["D", "E", "F", "G", "B", "C"]);
+    const wsMC = wsFromMatrix(MC);
+    wsMC["!autofilter"] = {
+      ref: `A1:H${N + 1}`
+    };
+    XLSX.utils.book_append_sheet(wb, wsMC, "請款明細(客戶)");
     XLSX.writeFile(wb, `歐聖發票明細${month}-彙總.xlsx`);
     toast("歐聖請款（3 分頁、含公式）已匯出 ✔");
   };
