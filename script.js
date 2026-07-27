@@ -174,7 +174,9 @@ function wsFromMatrix(matrix) {
     } else if (cell && typeof cell === "object" && "z" in cell) {
       ws[a] = { t: "n", v: (cell.v == null ? 0 : cell.v), z: cell.z };
     } else if (typeof cell === "number") ws[a] = { t: "n", v: cell };
-    else ws[a] = { t: "s", v: cell == null ? "" : String(cell) };
+    else if (cell != null && cell !== "") ws[a] = { t: "s", v: String(cell) };
+    // cell 是 null/undefined/空字串時完全不寫入儲存格，保持真正空白：公式裡引用到它做加減乘除，
+    // Excel 才會當它是 0；如果寫成內容是空字串的文字格儲存格，公式一參與運算就會出現 #VALUE!
     if (c > maxC) maxC = c;
   }));
   ws["!ref"] = XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: Math.max(0, matrix.length - 1), c: maxC } });

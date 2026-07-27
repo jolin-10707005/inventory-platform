@@ -336,10 +336,12 @@ function wsFromMatrix(matrix) {
     } else if (typeof cell === "number") ws[a] = {
       t: "n",
       v: cell
-    };else ws[a] = {
+    };else if (cell != null && cell !== "") ws[a] = {
       t: "s",
-      v: cell == null ? "" : String(cell)
+      v: String(cell)
     };
+    // cell 是 null/undefined/空字串時完全不寫入儲存格，保持真正空白：公式裡引用到它做加減乘除，
+    // Excel 才會當它是 0；如果寫成內容是空字串的文字格儲存格，公式一參與運算就會出現 #VALUE!
     if (c > maxC) maxC = c;
   }));
   ws["!ref"] = XLSX.utils.encode_range({
