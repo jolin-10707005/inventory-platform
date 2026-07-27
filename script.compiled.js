@@ -386,10 +386,11 @@ function withThousands(matrix, cols) {
  * （把每個儲存格指到新樣式），再重新打包。原本的公式/數值/數字格式完全不動，Excel 開檔看不出差異。
  * ============================================================ */
 
-// 在 styles.xml 補上「表頭樣式」「資料格樣式」兩組新樣式，各自對應每個原有樣式再疊加邊框（表頭再疊加底色+粗體）。
-// 回傳 { xml: 修改後的 styles.xml 字串, headerXfFor(舊樣式索引), dataXfFor(舊樣式索引) } 兩個轉換函式，
-// 讓呼叫端可以把儲存格原本的樣式（例如千分位數字格式）對應到「一樣的數字格式＋新增邊框」的新樣式，不會蓋掉原本格式。
-function injectXlsxStyles(stylesXmlText, headerFillRgb) {
+// 在 styles.xml 補上「資料格」＋每個具名底色（fillClasses 的每個 key，如 header/title/sub）共數組新樣式，
+// 各自對應每個原有樣式再疊加邊框（header 額外疊加粗體字型）。
+// 回傳 { xml: 修改後的 styles.xml 字串, xfFor(類別名稱, 舊樣式索引) } 轉換函式，讓呼叫端把儲存格原本的樣式
+// （例如千分位數字格式）對應到「一樣的數字格式＋新增邊框（＋底色）」的新樣式，不會蓋掉原本格式。
+function injectXlsxStyles(stylesXmlText, fillClasses) {
   const NS = "http://schemas.openxmlformats.org/spreadsheetml/2006/main";
   const doc = new DOMParser().parseFromString(stylesXmlText, "application/xml");
   const fonts = doc.getElementsByTagNameNS(NS, "fonts")[0];
@@ -407,19 +408,6 @@ function injectXlsxStyles(stylesXmlText, headerFillRgb) {
   boldFont.appendChild(fname);
   fonts.appendChild(boldFont);
   fonts.setAttribute("count", String(fontIdx + 1));
-  const fillIdx = fills.getElementsByTagNameNS(NS, "fill").length;
-  const headerFill = doc.createElementNS(NS, "fill");
-  const pf = doc.createElementNS(NS, "patternFill");
-  pf.setAttribute("patternType", "solid");
-  const fg = doc.createElementNS(NS, "fgColor");
-  fg.setAttribute("rgb", "FF" + headerFillRgb);
-  const bg = doc.createElementNS(NS, "bgColor");
-  bg.setAttribute("indexed", "64");
-  pf.appendChild(fg);
-  pf.appendChild(bg);
-  headerFill.appendChild(pf);
-  fills.appendChild(headerFill);
-  fills.setAttribute("count", String(fillIdx + 1));
   const borderIdx = borders.getElementsByTagNameNS(NS, "border").length;
   const thinBorder = doc.createElementNS(NS, "border");
   ["left", "right", "top", "bottom", "diagonal"].forEach(side => {
@@ -430,30 +418,49 @@ function injectXlsxStyles(stylesXmlText, headerFillRgb) {
   borders.appendChild(thinBorder);
   borders.setAttribute("count", String(borderIdx + 1));
   const xfList = Array.from(cellXfs.getElementsByTagNameNS(NS, "xf"));
-  const baseCount = xfList.length;
-  const dataXfIds = xfList.map((_, i) => baseCount + i);
-  const headerXfIds = xfList.map((_, i) => baseCount + xfList.length + i);
-  xfList.forEach(xf => {
-    const dataXf = xf.cloneNode(false);
-    dataXf.setAttribute("borderId", String(borderIdx));
-    dataXf.setAttribute("applyBorder", "1");
-    cellXfs.appendChild(dataXf);
+  let nextXfId = xfList.length;
+  const classXfIds = {};
+  const addClass = (name, fillIdx, bold) => {
+    classXfIds[name] = xfList.map(xf => {
+      const newXf = xf.cloneNode(false);
+      newXf.setAttribute("borderId", String(borderIdx));
+      newXf.setAttribute("applyBorder", "1");
+      if (fillIdx != null) {
+        newXf.setAttribute("fillId", String(fillIdx));
+        newXf.setAttribute("applyFill", "1");
+      }
+      if (bold) {
+        newXf.setAttribute("fontId", String(fontIdx));
+        newXf.setAttribute("applyFont", "1");
+      }
+      cellXfs.appendChild(newXf);
+      return nextXfId++;
+    });
+  };
+  addClass("data", null, false); // 純邊框、無底色，沒被列進 fillClasses 的儲存格用這組
+  Object.keys(fillClasses).forEach(name => {
+    const fillIdx = fills.getElementsByTagNameNS(NS, "fill").length;
+    const fillEl = doc.createElementNS(NS, "fill");
+    const pf = doc.createElementNS(NS, "patternFill");
+    pf.setAttribute("patternType", "solid");
+    const fg = doc.createElementNS(NS, "fgColor");
+    fg.setAttribute("rgb", "FF" + fillClasses[name]);
+    const bg = doc.createElementNS(NS, "bgColor");
+    bg.setAttribute("indexed", "64");
+    pf.appendChild(fg);
+    pf.appendChild(bg);
+    fillEl.appendChild(pf);
+    fills.appendChild(fillEl);
+    fills.setAttribute("count", String(fillIdx + 1));
+    addClass(name, fillIdx, name === "header");
   });
-  xfList.forEach(xf => {
-    const headerXf = xf.cloneNode(false);
-    headerXf.setAttribute("borderId", String(borderIdx));
-    headerXf.setAttribute("applyBorder", "1");
-    headerXf.setAttribute("fillId", String(fillIdx));
-    headerXf.setAttribute("applyFill", "1");
-    headerXf.setAttribute("fontId", String(fontIdx));
-    headerXf.setAttribute("applyFont", "1");
-    cellXfs.appendChild(headerXf);
-  });
-  cellXfs.setAttribute("count", String(baseCount + dataXfIds.length + headerXfIds.length));
+  cellXfs.setAttribute("count", String(nextXfId));
   return {
     xml: new XMLSerializer().serializeToString(doc),
-    dataXfFor: origIdx => dataXfIds[origIdx] ?? dataXfIds[0],
-    headerXfFor: origIdx => headerXfIds[origIdx] ?? headerXfIds[0]
+    xfFor: (className, origIdx) => {
+      const ids = classXfIds[className] || classXfIds.data;
+      return ids[origIdx] ?? ids[0];
+    }
   };
 }
 
@@ -461,10 +468,14 @@ function injectXlsxStyles(stylesXmlText, headerFillRgb) {
 // 用的協盤課人數欄）也會補上一個「只有樣式、沒有值」的空儲存格好畫出格線，不會影響它在公式裡還是被當空白（0）。
 function styleSheetXml(sheetXmlText, {
   headerRows,
+  rowClass,
+  cellClass,
   xfMap,
   maxRow,
   maxCol
 }) {
+  // 優先用 cellClass(列,欄)；沒給就退回 rowClass(列)／headerRows，整列同一個樣式
+  const classOf = cellClass || rowClass && ((rowNum, _colIdx) => rowClass(rowNum)) || ((rowNum, _colIdx) => headerRows && headerRows.includes(rowNum) ? "header" : "data");
   const NS = "http://schemas.openxmlformats.org/spreadsheetml/2006/main";
   const doc = new DOMParser().parseFromString(sheetXmlText, "application/xml");
   const sheetData = doc.getElementsByTagNameNS(NS, "sheetData")[0];
@@ -486,11 +497,10 @@ function styleSheetXml(sheetXmlText, {
       rowEl.setAttribute("r", String(rowNum));
       sheetData.appendChild(rowEl);
     }
-    const isHeader = headerRows.includes(rowNum);
     for (let colIdx = 0; colIdx <= maxCol; colIdx++) {
       let cEl = existingCells[colIdx];
       const curS = cEl ? Number(cEl.getAttribute("s") || 0) : 0;
-      const newS = isHeader ? xfMap.headerXfFor(curS) : xfMap.dataXfFor(curS);
+      const newS = xfMap.xfFor(classOf(rowNum, colIdx), curS);
       if (!cEl) {
         cEl = doc.createElementNS(NS, "c");
         cEl.setAttribute("r", XLSX.utils.encode_cell({
@@ -527,11 +537,14 @@ async function getSheetFileMap(zip) {
 }
 
 // 主流程：把 XLSX.write 產出的 array buffer 解開，補上樣式後重新打包成 Blob。
-// sheetSpecs = { 分頁名稱: { headerRows:[列號,...], maxRow, maxCol(0-based) } }，只有列在這裡的分頁會被加樣式。
-async function styleWorkbookBuffer(arrayBuffer, sheetSpecs, headerFillRgb) {
+// sheetSpecs = { 分頁名稱: { headerRows:[列號,...] 或 rowClass:(列號)=>類別名稱, maxRow, maxCol(0-based) } }，
+// 只有列在這裡的分頁會被加樣式；fillClasses = { 類別名稱: "RRGGBB", ... }（"data" 類別固定存在、只有邊框無底色）。
+async function styleWorkbookBuffer(arrayBuffer, sheetSpecs, fillClasses) {
   const zip = await JSZip.loadAsync(arrayBuffer);
   const stylesXml = await zip.file("xl/styles.xml").async("string");
-  const xfMap = injectXlsxStyles(stylesXml, headerFillRgb || "FCE4A3");
+  const xfMap = injectXlsxStyles(stylesXml, fillClasses || {
+    header: "FCE4A3"
+  });
   zip.file("xl/styles.xml", xfMap.xml);
   const fileMap = await getSheetFileMap(zip);
   for (const sheetName of Object.keys(sheetSpecs)) {
@@ -3465,18 +3478,17 @@ function AnalysisZone({
     };
     XLSX.utils.book_append_sheet(wb, wsM, "請款明細(彙總)");
 
-    // 分頁二：內部（左：公司發票小計＋業務部限定發票小計；右：課別家數/金額，依既定組織順序，
+    // 分頁二：內部（左：全公司＋業務部/一部/二部，四個獨立的發票小計區塊；右：課別家數/金額，依既定組織順序，
     // 金額用 4-way SUMIF——一家店的請款金額可能分給主責課或最多 3 個協盤課，全部要算進該課小計）
     const cntOf = d => viewRows.filter(r => r.dept === d).length;
     const sumOf = d => viewRows.filter(r => r.dept === d).reduce((a, r) => a + gVal(r), 0);
-    const MI = [];
-    let bizSubtotalRow = null,
-      bizSubtotalSum = 0;
+    const RIGHT = [["課別", "家數", "請款金額"]];
+    const divSubtotal = {}; // { [div]: { row, sum } }
     ORG.forEach(o => {
-      const startR = MI.length + 2;
+      const startR = RIGHT.length + 1;
       o.depts.forEach(d => {
-        const R = MI.length + 2;
-        MI.push(["", "", "", "", "", d, {
+        const R = RIGHT.length + 1;
+        RIGHT.push([d, {
           f: `COUNTIF('請款明細(彙總)'!$J:$J,'請款明細(內部)'!$F${R})`,
           v: cntOf(d)
         }, {
@@ -3484,78 +3496,97 @@ function AnalysisZone({
           v: sumOf(d)
         }]);
       });
-      const endR = MI.length + 1,
-        subR = MI.length + 2;
+      const endR = RIGHT.length,
+        subR = RIGHT.length + 1;
       const subCnt = o.depts.reduce((a, d) => a + cntOf(d), 0);
       const subSum = o.depts.reduce((a, d) => a + sumOf(d), 0);
-      MI.push(["", "", "", "", "", o.div, {
+      RIGHT.push([o.div, {
         f: `SUM(G${startR}:G${endR})`,
         v: subCnt
       }, {
         f: `SUM(H${startR}:H${endR})`,
         v: subSum
       }]);
-      if (o.div === "業務部") {
-        bizSubtotalRow = subR;
-        bizSubtotalSum = subSum;
-      }
+      divSubtotal[o.div] = {
+        row: subR,
+        sum: subSum
+      };
     });
-    const subtotalRows = [];
-    {
-      let r = 2;
-      ORG.forEach(o => {
-        r += o.depts.length;
-        subtotalRows.push(r);
-        r += 1;
-      });
-    }
-    MI.push(["", "", "", "", "", "總計", {
+    const subtotalRows = Object.values(divSubtotal).map(d => d.row).sort((a, b) => a - b);
+    const grandRow = RIGHT.length + 1;
+    RIGHT.push(["總計", {
       f: subtotalRows.map(r => `G${r}`).join("+"),
       v: viewRows.length
     }, {
       f: subtotalRows.map(r => `H${r}`).join("+"),
       v: grand
     }]);
-    MI.unshift(["", "", "", "", "", "課別", "家數", "請款金額"]);
-    const setLeft = (rowNum, vals) => {
-      while (MI.length < rowNum) MI.push([]);
-      vals.forEach((v, ci) => {
-        MI[rowNum - 1][ci] = v;
-      });
+
+    // 左側四個發票小計區塊，各自獨立成一組「項目/數量/金額＋5%稅金＋總計」，彼此間空一列
+    const baseTitle = `# ${+moStr}月請款金額`;
+    const LEFT = [];
+    const titleRows = [];
+    const pushBlock = (title, amountCell) => {
+      const svcAmt = amountCell.v,
+        taxAmt = Math.round(svcAmt * 0.05 * 100) / 100;
+      const svcRow = LEFT.length + 3,
+        taxRow = svcRow + 1;
+      titleRows.push(LEFT.length + 1);
+      LEFT.push([title]);
+      LEFT.push(["項目", "數量", "金額"]);
+      LEFT.push(["盤點服務", 1, amountCell]);
+      LEFT.push(["", "5%稅金", {
+        f: `SUM(C${svcRow})*0.05`,
+        v: taxAmt
+      }]);
+      LEFT.push(["", "總計", {
+        f: `SUM(C${svcRow}:C${taxRow})`,
+        v: svcAmt + taxAmt
+      }]);
+      LEFT.push([]);
     };
-    setLeft(1, [{
+    pushBlock({
       f: `'請款明細(彙總)'!C${summaryTitleRow}`,
       v: invoiceTitle
-    }, "", "", "台灣歐聖股份有限公司"]);
-    setLeft(2, ["項目", "數量", "金額", "統一編號：24940192"]);
-    setLeft(3, ["盤點服務", 1, {
+    }, {
       f: `'請款明細(彙總)'!G${summarySvcRow}`,
       v: grand
-    }]);
-    setLeft(4, ["", "5%稅金", {
-      f: `SUM(C3)*0.05`,
-      v: Math.round(grand * 0.05 * 100) / 100
-    }]);
-    setLeft(5, ["", "總計", {
-      f: `SUM(C3:C4)`,
-      v: grand + Math.round(grand * 0.05 * 100) / 100
-    }]);
-    setLeft(7, [`${invoiceTitle}(盤點中心業務部)`]);
-    setLeft(8, ["項目", "數量", "金額"]);
-    setLeft(9, ["盤點服務", 1, {
-      f: `H${bizSubtotalRow}`,
-      v: bizSubtotalSum
-    }]);
-    setLeft(10, ["", "5%稅金", {
-      f: `SUM(C9)*0.05`,
-      v: Math.round(bizSubtotalSum * 0.05 * 100) / 100
-    }]);
-    setLeft(11, ["", "總計", {
-      f: `SUM(C9:C10)`,
-      v: bizSubtotalSum + Math.round(bizSubtotalSum * 0.05 * 100) / 100
-    }]);
+    });
+    pushBlock(`${baseTitle}(盤點中心業務部)`, {
+      f: `H${divSubtotal["業務部"].row}`,
+      v: divSubtotal["業務部"].sum
+    });
+    pushBlock(`${baseTitle}(盤點中心一部)`, {
+      f: `H${divSubtotal["一部"].row}`,
+      v: divSubtotal["一部"].sum
+    });
+    pushBlock(`${baseTitle}(盤點中心二部)`, {
+      f: `H${divSubtotal["二部"].row}`,
+      v: divSubtotal["二部"].sum
+    });
+    if (LEFT.length && LEFT[LEFT.length - 1].length === 0) LEFT.pop(); // 最後一個區塊不需要多留空列
+
+    // 合併左右兩側（欄 E 留空當間隔），並補上公司名稱／統一編號兩個固定欄位
+    const MI = [];
+    for (let i = 0; i < Math.max(LEFT.length, RIGHT.length); i++) {
+      const l = LEFT[i] || [],
+        r = RIGHT[i] || [];
+      MI.push([l[0] ?? "", l[1] ?? "", l[2] ?? "", "", "", r[0] ?? "", r[1] ?? "", r[2] ?? ""]);
+    }
+    MI[0][3] = "台灣歐聖股份有限公司";
+    MI[1][3] = "統一編號：24940192";
     withThousands(MI, ["B", "C", "G", "H"]);
     XLSX.utils.book_append_sheet(wb, wsFromMatrix(MI), "請款明細(內部)");
+    // 左（A-D，發票小計區塊）跟右（F-H，課別表）語意獨立卻可能共用同一列號，分開判斷顏色，避免互相蓋到：
+    // 左側只有「標題列」用灰底，右側只有「部門小計列」淺藍、「總計列」金色，其餘都只有邊框
+    const miTitleRows = new Set(titleRows),
+      miSubRows = new Set(subtotalRows);
+    const miCellClass = (r, c) => {
+      if (c <= 3) return miTitleRows.has(r) ? "title" : "data";
+      return r === grandRow ? "header" : miSubRows.has(r) ? "sub" : "data";
+    };
+    const miMaxRow = MI.length,
+      miMaxCol = 7;
 
     // 分頁三：客戶（A–H，同彙總欄位與公式；底部合計列＋發票小計，自己欄位加總、不跨分頁引用）
     const HC = ["盤點日期", "店點代號", "店櫃", "實盤件數", "總倉別", "倉別加計費用", "請款金額", "備註"];
@@ -3605,11 +3636,21 @@ function AnalysisZone({
           maxCol: 21
         },
         // A~V 共22欄，0-based 索引到21
+        "請款明細(內部)": {
+          cellClass: miCellClass,
+          maxRow: miMaxRow,
+          maxCol: miMaxCol
+        },
+        // 金色=總計列，淺藍=各部門小計列，灰=發票小計標題列
         "請款明細(客戶)": {
           headerRows: [1],
           maxRow: N + 2,
           maxCol: 7
         } // A~H 共8欄，0-based 索引到7
+      }, {
+        header: "FCE4A3",
+        title: "E7E6E6",
+        sub: "DCE6F1"
       });
       downloadBlob(filename, styledBlob);
     } catch (err) {
