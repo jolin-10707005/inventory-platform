@@ -2012,7 +2012,7 @@ function AnalysisZone({ db, setDB, month, setMonth, toast }) {
       const R = i + 2, wh = num(r.warehouse) || 1, g = gVal(r);
       M.push([...detailRow(r, i),
         r.div || DEPT_TO_DIV[r.dept] || "", r.dept, r.headcount,
-        { f: `ROUND((K${R}/($K${R}+$N${R}+$Q${R}+$T${R})*$G${R}),0)`, v: g },
+        { f: `IF($K${R}+$N${R}+$Q${R}+$T${R}=0,0,ROUND((K${R}/($K${R}+$N${R}+$Q${R}+$T${R})*$G${R}),0))`, v: g },
         "", "", { f: `IF($K${R}+$N${R}+$Q${R}+$T${R}=0,0,ROUND((N${R}/($K${R}+$N${R}+$Q${R}+$T${R})*$G${R}),0))`, v: 0 },
         "", "", { f: `IF($K${R}+$N${R}+$Q${R}+$T${R}=0,0,ROUND((Q${R}/($K${R}+$N${R}+$Q${R}+$T${R})*$G${R}),0))`, v: 0 },
         "", "", { f: `IF($K${R}+$N${R}+$Q${R}+$T${R}=0,0,ROUND((T${R}/($K${R}+$N${R}+$Q${R}+$T${R})*$G${R}),0))`, v: 0 },
@@ -2024,7 +2024,7 @@ function AnalysisZone({ db, setDB, month, setMonth, toast }) {
       { f: `SUM(E2:E${N + 1})`, v: viewRows.reduce((a, r) => a + (num(r.warehouse) || 1), 0) },
       { f: `SUM(F2:F${N + 1})`, v: viewRows.reduce((a, r) => a + ((num(r.warehouse) || 1) - 1) * whF, 0) },
       { f: `SUM(G2:G${N + 1})`, v: grand },
-      "", "", "", "", "", "", "", "", "", "", "", "", "", { f: `SUM(V2:V${N + 1})`, v: grand }]);
+      "", "", "", "", "", "", "", "", "", "", "", "", "", "", { f: `SUM(V2:V${N + 1})`, v: grand }]);
     M.push([]);
     M.push([invoiceTitle]);
     const summaryTitleRow = M.length;

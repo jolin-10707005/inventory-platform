@@ -3205,7 +3205,7 @@ function AnalysisZone({
         wh = num(r.warehouse) || 1,
         g = gVal(r);
       M.push([...detailRow(r, i), r.div || DEPT_TO_DIV[r.dept] || "", r.dept, r.headcount, {
-        f: `ROUND((K${R}/($K${R}+$N${R}+$Q${R}+$T${R})*$G${R}),0)`,
+        f: `IF($K${R}+$N${R}+$Q${R}+$T${R}=0,0,ROUND((K${R}/($K${R}+$N${R}+$Q${R}+$T${R})*$G${R}),0))`,
         v: g
       }, "", "", {
         f: `IF($K${R}+$N${R}+$Q${R}+$T${R}=0,0,ROUND((N${R}/($K${R}+$N${R}+$Q${R}+$T${R})*$G${R}),0))`,
@@ -3234,7 +3234,7 @@ function AnalysisZone({
     }, {
       f: `SUM(G2:G${N + 1})`,
       v: grand
-    }, "", "", "", "", "", "", "", "", "", "", "", "", "", {
+    }, "", "", "", "", "", "", "", "", "", "", "", "", "", "", {
       f: `SUM(V2:V${N + 1})`,
       v: grand
     }]);
