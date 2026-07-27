@@ -321,8 +321,11 @@ function wsFromMatrix(matrix) {
       c
     });
     if (cell && typeof cell === "object" && "f" in cell) {
+      // t 沒有明確指定時依 v 的實際型別判斷（例如快取值是文字標題時要標 "str"，
+      // 不能一律預設數字型 "n"：文字塞進數字格，Excel 開檔重算公式會出現 #NUM!）
+      const t = cell.t || (typeof cell.v === "string" ? "str" : "n");
       ws[a] = {
-        t: cell.t || "n",
+        t,
         f: cell.f,
         v: cell.v == null ? 0 : cell.v
       };

@@ -169,7 +169,10 @@ function wsFromMatrix(matrix) {
   matrix.forEach((row, r) => row.forEach((cell, c) => {
     const a = XLSX.utils.encode_cell({ r, c });
     if (cell && typeof cell === "object" && "f" in cell) {
-      ws[a] = { t: cell.t || "n", f: cell.f, v: (cell.v == null ? 0 : cell.v) };
+      // t 沒有明確指定時依 v 的實際型別判斷（例如快取值是文字標題時要標 "str"，
+      // 不能一律預設數字型 "n"：文字塞進數字格，Excel 開檔重算公式會出現 #NUM!）
+      const t = cell.t || (typeof cell.v === "string" ? "str" : "n");
+      ws[a] = { t, f: cell.f, v: (cell.v == null ? 0 : cell.v) };
       if (cell.z) ws[a].z = cell.z;
     } else if (cell && typeof cell === "object" && "z" in cell) {
       ws[a] = { t: "n", v: (cell.v == null ? 0 : cell.v), z: cell.z };
