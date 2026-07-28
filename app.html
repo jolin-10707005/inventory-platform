@@ -16,14 +16,18 @@
 <body class="bg-slate-100 min-h-screen">
   <div id="root"></div>
   <script>
-    // 動態載入 api.js / script.compiled.js；版號僅在實際變更這兩支檔案、要部署新版時才手動 +1
-    // （改成手動版號而非每次用時間戳，是為了讓瀏覽器能快取，加快重複造訪的載入速度；
-    //   注意：忘記在部署新版時 +1，使用者會吃到舊快取）
-    //
-    // script.compiled.js 是 script.js（原始 JSX 原始碼）用 Babel 預先編譯好的純 JS，
-    // 瀏覽器直接執行、不用再即時轉譯 JSX，省掉每個訪客瀏覽器都要重跑一次的解析＋轉譯成本。
-    // 改 script.js 後務必重新編譯才能推送新版（見 script.js 開頭說明）。
-    (function () {
+    // 未登入（sessionStorage 沒有 loginUser）一律導回登入頁——避免有人直接輸入這頁網址跳過帳密驗證，
+    // 讓「帳號權限」設定的角色限制形同虛設（原本的「原型展示模式」跳過連結已從登入頁移除，此處是最後一道防線）
+    if (!sessionStorage.getItem('loginUser')) {
+      window.location.replace('index.html');
+    } else {
+      // 動態載入 api.js / script.compiled.js；版號僅在實際變更這兩支檔案、要部署新版時才手動 +1
+      // （改成手動版號而非每次用時間戳，是為了讓瀏覽器能快取，加快重複造訪的載入速度；
+      //   注意：忘記在部署新版時 +1，使用者會吃到舊快取）
+      //
+      // script.compiled.js 是 script.js（原始 JSX 原始碼）用 Babel 預先編譯好的純 JS，
+      // 瀏覽器直接執行、不用再即時轉譯 JSX，省掉每個訪客瀏覽器都要重跑一次的解析＋轉譯成本。
+      // 改 script.js 後務必重新編譯才能推送新版（見 script.js 開頭說明）。
       var v = "43";
       var s1 = document.createElement('script');
       s1.src = 'api.js?v=' + v;
@@ -33,7 +37,7 @@
         document.body.appendChild(s2);
       };
       document.body.appendChild(s1);
-    })();
+    }
   </script>
 </body>
 </html>
