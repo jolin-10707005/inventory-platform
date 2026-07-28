@@ -94,9 +94,10 @@
       btn.textContent = '驗證中…';
 
       try {
+        // 不設 Content-Type → 送出為 text/plain（簡單請求），避免 Apps Script 不支援 CORS 預檢（preflight）
+        // 導致請求被瀏覽器擋掉；Code.gs 的 doPost 一律用 JSON.parse(e.postData.contents) 解析，不看宣告的 content type
         const response = await fetch(API_URL, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ action: 'checkUserId', userId, password })
         });
         const data = await response.json();
