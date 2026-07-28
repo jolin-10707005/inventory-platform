@@ -55,8 +55,13 @@
     // 規範：POST https://eip.fme.com.tw/FMEIP/AasApi/CheckUserId
     // 回傳 MSG 格式為「代碼 + 空格 + 說明」，僅取前三碼判斷
     // 嚴格禁止程式重複提交表單：送出前 disable 按鈕
+    //
+    // ⚠ 這支 API 只允許 eip.fme.com.tw 自己網域的 CORS 請求，瀏覽器從本站（GitHub Pages）直接呼叫
+    //   一律會被瀏覽器擋掉（fetch 只會報「Failed to fetch」，看不出真正原因是 CORS）。
+    //   改成呼叫我們自己的 Apps Script 後端代轉（伺服器對伺服器不受 CORS 限制），
+    //   這裡的網址要跟 api.js 的 API_CONFIG.APPS_SCRIPT_URL 保持一致（後端重新部署後兩處都要更新）。
     // ============================================================
-    const API_URL = 'https://eip.fme.com.tw/FMEIP/AasApi/CheckUserId';
+    const API_URL = 'https://script.google.com/macros/s/AKfycbz7kHutmQWdXqEC_rW5fO7tVklFfEBvj0788yPan2nrIW29ccWsgoOvnWTqBEPqG5H5/exec';
 
     const form = document.getElementById('loginForm');
     const btn = document.getElementById('loginBtn');
@@ -92,9 +97,10 @@
         const response = await fetch(API_URL, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ USER_ID: userId, PSW: password })
+          body: JSON.stringify({ action: 'checkUserId', userId, password })
         });
         const data = await response.json();
+        if (data.error) { showError('系統發生錯誤，請聯絡管理員'); return; }
         const code = data.MSG.split(' ')[0];
 
         if (code === '000') {

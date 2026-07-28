@@ -96,12 +96,29 @@ function doPost(e) {
         return jsonOut({ ok: true, storeIds: putMasterBatch(body) });
       case "deleteMastersByFile":
         return jsonOut({ ok: true, removed: deleteMastersByFile(body.srcFile, body.month, body.brandId) });
+      case "checkUserId":
+        return jsonOut(checkUserId(body.userId, body.password));
       default:
         return jsonOut({ error: "unknown action: " + body.action });
     }
   } catch (err) {
     return jsonOut({ error: String(err && err.message ? err.message : err) });
   }
+}
+
+// 日翊 AD 帳密驗證（FME CheckUserId API）伺服器端代轉：該 API 只允許 eip.fme.com.tw 自己網域的 CORS 請求，
+// 瀏覽器（index.html）直接呼叫會被瀏覽器擋掉（一律回報成「無法連線」，看不出真正原因是 CORS）；
+// 伺服器對伺服器呼叫不受 CORS 限制，所以改由前端呼叫這支 Apps Script 代轉，密碼只在這一次轉發途中經過，不落地儲存。
+var FME_CHECK_USER_ID_URL = "https://eip.fme.com.tw/FMEIP/AasApi/CheckUserId";
+function checkUserId(userId, password) {
+  var resp = UrlFetchApp.fetch(FME_CHECK_USER_ID_URL, {
+    method: "post",
+    contentType: "application/json",
+    payload: JSON.stringify({ USER_ID: userId, PSW: password }),
+    muteHttpExceptions: true
+  });
+  var data = JSON.parse(resp.getContentText());
+  return { MSG: data.MSG };
 }
 
 /* ---------- 讀取 ---------- */
