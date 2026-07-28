@@ -11,7 +11,7 @@
 // 盤點照片要存放的 Google Drive 資料夾 ID（即使用者提供的資料夾）
 var PHOTO_FOLDER_ID = "1h9qjSAx2-sojs5_uP307qmBUvw-XiDhn";
 
-var TABS = ["brands", "stores", "staff", "prices", "records", "uploads", "aliases", "categoryAliases", "manuals", "layouts", "countTotals", "opsMargins", "layoutOverrides"];
+var TABS = ["brands", "accountRoles", "stores", "staff", "prices", "records", "uploads", "aliases", "categoryAliases", "manuals", "layouts", "countTotals", "opsMargins", "layoutOverrides"];
 
 // 各品牌自己的 Google Sheets 試算表 ID：避免三品牌資料量加在一起，撞到 Google Sheets 單一試算表
 // 1000 萬儲存格上限（歐聖之前就撞過一次，才把庫存檔改成寬表格式，見下方 migrateStockToWideFormat 的說明）。
@@ -36,6 +36,7 @@ function getSpreadsheetForBrand(brandId) {
 // 分頁顯示名稱（程式內部仍用英文代碼；工作表分頁改中文，方便人工檢視）
 var SHEET_NAMES = {
   brands: "品牌",
+  accountRoles: "帳號權限",
   stores: "店鋪",
   staff: "盤點人員",
   prices: "單價",
@@ -111,8 +112,9 @@ var ALL_BRAND_SCAN_IDS = function () { return [""].concat(Object.keys(BRAND_SPRE
 function getAll() {
   var db = {};
   db.brands = readTab("brands", ""); // 品牌清單全平台共用，只在主試算表
+  db.accountRoles = readTab("accountRoles", ""); // 帳號權限對照表同樣全平台共用，只在主試算表，跟品牌無關
   TABS.forEach(function (tab) {
-    if (tab === "brands") return;
+    if (tab === "brands" || tab === "accountRoles") return;
     var merged = [];
     ALL_BRAND_SCAN_IDS().forEach(function (bid) { merged = merged.concat(readTab(tab, bid)); });
     db[tab] = merged;
@@ -150,7 +152,7 @@ function readTab(tab, brandId) {
 // 要合併成一次 clear+寫入，不能各品牌分開呼叫，否則後面的品牌會把前面品牌剛寫好的資料整頁清掉。
 function replaceTab(tab, rows) {
   rows = rows || [];
-  if (tab === "brands") { replaceTabInSheet(sheet("brands", ""), rows); return; }
+  if (tab === "brands" || tab === "accountRoles") { replaceTabInSheet(sheet(tab, ""), rows); return; }
   var buckets = {}; // key: 解析出來的試算表 id，value: {ss, rows:[]}
   var bucketFor = function (brandId) {
     var ss = getSpreadsheetForBrand(brandId);
@@ -746,7 +748,7 @@ function toLine(row, headers) {
 // 不分品牌，一律留在主試算表，不受 BRAND_SPREADSHEET_IDS 影響
 function sheet(name, brandId) {
   var real = SHEET_NAMES[name] || name; // 英文代碼 → 中文分頁名
-  var ss = (name === "brands") ? SpreadsheetApp.getActiveSpreadsheet() : getSpreadsheetForBrand(brandId);
+  var ss = (name === "brands" || name === "accountRoles") ? SpreadsheetApp.getActiveSpreadsheet() : getSpreadsheetForBrand(brandId);
   var sh = ss.getSheetByName(real);
   if (!sh) sh = ss.insertSheet(real);
   return sh;

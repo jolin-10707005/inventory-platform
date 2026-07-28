@@ -8,8 +8,11 @@
  *   2. 填寫區   FillZone      - 記錄盤點作業時間 / 件數人數 / 特殊狀況 / 照片
  *   3. 上傳區   UploadZone    - 上傳客戶主檔並依店鋪格式產製各店主檔（庫存檔）
  *   4. 數據分析區 AnalysisZone - 作業效率分析 + 請款資料（依品牌/店鋪單價）
- *   5. 維護區   MaintainZone  - 品牌 / 店鋪名單 / 盤點人員 / 單價設定（Excel 匯入或單筆新增）
- * 權限：盤點人員僅可使用「下載區 / 填寫區」，管理者可使用全部功能
+ *   5. 維護區   MaintainZone  - 品牌 / 帳號權限 / 店鋪名單 / 盤點人員 / 單價設定（Excel 匯入或單筆新增）
+ * 權限（三層，依登入帳號在「帳號權限」名單中的設定自動判斷；不在名單中預設盤點人員）：
+ *   管理者   manager  - 全部功能
+ *   業務主管 analyst  - 除「維護區」外的全部功能（含數據分析）
+ *   盤點人員 staff    - 僅「Layout 圖 / 主檔下載 / 盤點總表上傳 / 盤點作業情況紀錄」（無數據分析、無維護區）
  * 資料：透過 api.js 存取（localStorage 或 Google Sheets/Drive，可切換）
  *       // TODO: 未來改接日翊資料庫時，只需修改 api.js（見 openspec/api-interface.json）
  *
@@ -38,6 +41,9 @@ const seedDB = {
     id: "B03",
     name: "歐都納"
   }],
+  // 帳號權限對照表：{ name(姓名), account(登入帳號), role(manager/analyst/staff) }，全平台共用、不分品牌月份
+  // 這裡刻意留空——真實員工帳號屬個資，禁止寫進範例資料，請管理者在維護區「🔑 帳號權限」自行匯入
+  accountRoles: [],
   stores: [{
     id: "S001",
     brandId: "B01",
@@ -217,15 +223,47 @@ const seedDB = {
  * Layout圖／盤點總表／Layout轉檔例外設定 → 逐筆 upsertRow，當下就同步寫入等結果，不透過背景批次同步
  *   （批次同步是多分頁平行送出、失敗會整批漏寫又不會重試，且失敗後背景刷新會用舊資料蓋掉剛上傳成功的畫面）
  */
-const ADMIN_TABS = ["brands", "stores", "staff", "prices", "aliases", "categoryAliases", "manuals", "opsMargins"];
+const ADMIN_TABS = ["brands", "accountRoles", "stores", "staff", "prices", "aliases", "categoryAliases", "manuals", "opsMargins"];
 const ALL_TABS = [...ADMIN_TABS, "layouts", "countTotals", "layoutOverrides", "records", "uploads"];
 function seed() {
   return JSON.parse(JSON.stringify(seedDB));
 }
 
+// 從後端／快取讀回的 db 補上新欄位的預設值：Apps Script 尚未重新部署前不會回傳 accountRoles，
+// 沒補這層會讓 db.accountRoles.map(...) 直接炸掉整個畫面
+function normalizeDB(d) {
+  if (!d) return d;
+  if (!d.accountRoles) d.accountRoles = [];
+  return d;
+}
+
 /* ---------------- 共用工具 ---------------- */
 function uid(prefix) {
   return prefix + Math.random().toString(36).slice(2, 8).toUpperCase();
+}
+
+// 角色（見「帳號權限」維護）：manager=全部功能、analyst=除維護區的全部功能、staff=最低權限（預設）
+const ROLE_LABELS = {
+  manager: "👑 管理者",
+  analyst: "📊 業務主管",
+  staff: "🧑‍🔧 盤點人員"
+};
+
+// 匯入 Excel「可使用功能」欄的中文敘述 → 內部角色代碼；看不懂的文字保守預設 staff（最低權限），
+// 避免打錯字或未來新增的敘述被誤判成較高權限
+function mapFunctionTextToRole(text) {
+  const t = String(text || "").trim();
+  if (t === "全部") return "manager";
+  if (/除.*維護區/.test(t) && !/數據分析|資料分析/.test(t)) return "analyst";
+  return "staff";
+}
+
+// 登入帳號（大小寫不分）在「帳號權限」名單中查角色；查無此帳號 → 預設 staff（盤點人員，最低權限）
+function resolveRoleForAccount(account, accountRoles) {
+  const a = String(account || "").trim().toLowerCase();
+  const rec = (accountRoles || []).find(r => String(r.account || "").trim().toLowerCase() === a);
+  if (!rec) return "staff";
+  return rec.role === "manager" || rec.role === "analyst" ? rec.role : "staff";
 }
 
 // 計算作業時數（跨夜自動 +24h）
@@ -4168,6 +4206,11 @@ function MaintainZone({
     name: "",
     title: ""
   });
+  const [accountForm, setAccountForm] = useState({
+    name: "",
+    account: "",
+    role: "staff"
+  });
   const [sFilters, setSFilters] = useState({}); // 店鋪篩選
   const [pFilters, setPFilters] = useState({}); // 人員篩選
   const setSF = (k, v) => setSFilters(p => ({
@@ -4266,15 +4309,49 @@ function MaintainZone({
     toast("盤點人員已新增 ✔");
   };
 
+  // 帳號權限：全平台共用、不分品牌月份（帳號同一支帳號只能有一筆設定，重複新增/匯入會覆蓋舊的）
+  const addAccountRole = () => {
+    if (!accountForm.account.trim() || !accountForm.name.trim()) {
+      toast("姓名與帳號皆為必填");
+      return;
+    }
+    const account = accountForm.account.trim();
+    setDB(d => ({
+      ...d,
+      accountRoles: [...d.accountRoles.filter(a => a.account.toLowerCase() !== account.toLowerCase()), {
+        name: accountForm.name.trim(),
+        account,
+        role: accountForm.role
+      }]
+    }));
+    setAccountForm({
+      name: "",
+      account: "",
+      role: "staff"
+    });
+    toast("帳號權限已新增 ✔");
+  };
+  const removeAccountRole = account => setDB(d => ({
+    ...d,
+    accountRoles: d.accountRoles.filter(a => a.account !== account)
+  }));
+
   // 匯入範本欄位
   const TEMPLATES = {
     stores: ["店鋪代碼", "店鋪名稱", "主責課", "店鋪種類", "英文店名", "倉別量", "盤點日期", "人數", "分倉英文店名（多個用逗號分隔）"],
-    staff: ["部別", "課別", "工號", "姓名", "職稱"]
+    staff: ["部別", "課別", "工號", "姓名", "職稱"],
+    accountRoles: ["姓名", "帳號", "可使用功能"]
+  };
+  const TEMPLATE_LABELS = {
+    stores: "店鋪名單",
+    staff: "盤點人員名單",
+    accountRoles: "帳號權限"
   };
   // 下載匯入範本（Excel）
   const downloadTemplate = kind => {
-    const label = kind === "stores" ? "店鋪名單" : "盤點人員名單";
-    exportXLSX(`${label}_匯入範本.xlsx`, label, [TEMPLATES[kind], kind === "stores" ? ["TO006", "華泰名品城", "桃竹課", "Outlet", "華泰名品城", "4", "2026-01-06", "2", "Gloria_Destroy,Gloria_Family Sale,GLORIA_Temp Store"] : ["一部", "北一課", "E001", "範例姓名", "資深專員"]]);
+    const label = TEMPLATE_LABELS[kind];
+    const sample = kind === "stores" ? ["TO006", "華泰名品城", "桃竹課", "Outlet", "華泰名品城", "4", "2026-01-06", "2", "Gloria_Destroy,Gloria_Family Sale,GLORIA_Temp Store"] : kind === "staff" ? ["一部", "北一課", "E001", "範例姓名", "資深專員"] : ["範例姓名", "exampleid", "全部"]; // 可使用功能填「全部」／「除維護區的全部功能」，其餘文字（含留空）視為盤點人員
+    exportXLSX(`${label}_匯入範本.xlsx`, label, [TEMPLATES[kind], sample]);
     toast(`已下載${label}匯入範本`);
   };
 
@@ -4390,7 +4467,7 @@ function MaintainZone({
           stores: [...d.stores.filter(s => !(s.srcFile === f.name && s.brandId === brandId && s.month === month)), ...items]
         }));
         toast(`已匯入 ${items.length} 筆店鋪資料 ✔${subCount ? `（自動展開 ${subCount} 筆分倉）` : ""}${prior ? `；已清除同檔名舊資料 ${prior} 筆` : ""}`);
-      } else {
+      } else if (kind === "staff") {
         const hDiv = findH(/部別|部門|div/i);
         const hSec = findH(/課別|主責課/i);
         const hEmp = findH(/工號|員工編號|員編|empNo/i);
@@ -4425,6 +4502,30 @@ function MaintainZone({
           staff: [...d.staff.filter(p => !(p.srcFile === f.name && p.brandId === brandId && p.month === month)), ...items]
         }));
         toast(`已匯入 ${items.length} 位盤點人員 ✔${prior ? `（已清除同檔名舊資料 ${prior} 筆）` : ""}`);
+      } else if (kind === "accountRoles") {
+        // 帳號權限不分品牌月份，以「帳號」為唯一鍵：同帳號重複匯入直接覆蓋舊設定（而非像店鋪/人員那樣以檔名比對）
+        const hNm2 = headers.find(h => /姓名|名稱|name/i.test(String(h)));
+        const hAccount = findH(/帳號|帳戶|account|userid/i);
+        const hFunc = findH(/可使用功能|功能|權限|role/i);
+        const get = (r, h) => h ? String(r[h] == null ? "" : r[h]).trim() : "";
+        const items = rows.map(r => ({
+          name: get(r, hNm2),
+          account: get(r, hAccount),
+          role: mapFunctionTextToRole(get(r, hFunc))
+        })).filter(x => x.account && x.name);
+        if (items.length === 0) {
+          toast("未讀到有效帳號資料，請確認欄位（姓名／帳號）");
+          e.target.value = "";
+          return;
+        }
+        setDB(d => {
+          const seen = new Set(items.map(x => x.account.toLowerCase()));
+          return {
+            ...d,
+            accountRoles: [...d.accountRoles.filter(a => !seen.has(String(a.account).toLowerCase())), ...items]
+          };
+        });
+        toast(`已匯入 ${items.length} 筆帳號權限 ✔`);
       }
     } catch (err) {
       toast("Excel 解析失敗，請確認檔案格式");
@@ -4490,6 +4591,9 @@ function MaintainZone({
   }, {
     id: "brands",
     label: "🏷 品牌管理"
+  }, {
+    id: "accounts",
+    label: "🔑 帳號權限"
   }];
   const inputCls = "px-3 py-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 outline-none";
   const importBtn = (kind, label) => /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("label", {
@@ -5009,7 +5113,78 @@ function MaintainZone({
   }, db.brands.map(b => /*#__PURE__*/React.createElement("span", {
     key: b.id,
     className: "px-4 py-2 bg-slate-100 border border-slate-200 rounded-full text-sm"
-  }, "🏷 ", b.name)))));
+  }, "🏷 ", b.name)))), tab === "accounts" && /*#__PURE__*/React.createElement("div", {
+    className: "mt-4 space-y-4 fade-in"
+  }, /*#__PURE__*/React.createElement("p", {
+    className: "text-sm text-slate-500"
+  }, "登入帳號不在此名單中的人員，系統會自動視為「", ROLE_LABELS.staff, "」（無數據分析、無維護區）。"), /*#__PURE__*/React.createElement("div", {
+    className: "flex flex-wrap gap-3 items-center"
+  }, importBtn("accountRoles", "帳號權限"), /*#__PURE__*/React.createElement("span", {
+    className: "text-slate-300"
+  }, "|"), /*#__PURE__*/React.createElement("input", {
+    placeholder: "姓名",
+    value: accountForm.name,
+    onChange: e => setAccountForm({
+      ...accountForm,
+      name: e.target.value
+    }),
+    className: inputCls + " w-32"
+  }), /*#__PURE__*/React.createElement("input", {
+    placeholder: "帳號",
+    value: accountForm.account,
+    onChange: e => setAccountForm({
+      ...accountForm,
+      account: e.target.value
+    }),
+    className: inputCls + " w-40"
+  }), /*#__PURE__*/React.createElement("select", {
+    value: accountForm.role,
+    onChange: e => setAccountForm({
+      ...accountForm,
+      role: e.target.value
+    }),
+    className: inputCls + " bg-white"
+  }, /*#__PURE__*/React.createElement("option", {
+    value: "manager"
+  }, ROLE_LABELS.manager), /*#__PURE__*/React.createElement("option", {
+    value: "analyst"
+  }, ROLE_LABELS.analyst), /*#__PURE__*/React.createElement("option", {
+    value: "staff"
+  }, ROLE_LABELS.staff)), /*#__PURE__*/React.createElement("button", {
+    onClick: addAccountRole,
+    className: "px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm rounded-lg"
+  }, "＋ 單筆新增")), /*#__PURE__*/React.createElement("div", {
+    className: "table-scroll"
+  }, /*#__PURE__*/React.createElement("table", {
+    className: "w-full text-sm"
+  }, /*#__PURE__*/React.createElement("thead", null, /*#__PURE__*/React.createElement("tr", {
+    className: "text-left text-slate-500 border-b"
+  }, /*#__PURE__*/React.createElement("th", {
+    className: "py-2 pr-4"
+  }, "姓名"), /*#__PURE__*/React.createElement("th", {
+    className: "py-2 pr-4"
+  }, "帳號"), /*#__PURE__*/React.createElement("th", {
+    className: "py-2 pr-4"
+  }, "角色"), /*#__PURE__*/React.createElement("th", {
+    className: "py-2 pr-4"
+  }, "操作"))), /*#__PURE__*/React.createElement("tbody", null, db.accountRoles.map(a => /*#__PURE__*/React.createElement("tr", {
+    key: a.account,
+    className: "border-b last:border-0"
+  }, /*#__PURE__*/React.createElement("td", {
+    className: "py-2 pr-4"
+  }, a.name), /*#__PURE__*/React.createElement("td", {
+    className: "py-2 pr-4 font-mono"
+  }, a.account), /*#__PURE__*/React.createElement("td", {
+    className: "py-2 pr-4"
+  }, ROLE_LABELS[a.role] || ROLE_LABELS.staff), /*#__PURE__*/React.createElement("td", {
+    className: "py-2 pr-4"
+  }, /*#__PURE__*/React.createElement("button", {
+    onClick: () => removeAccountRole(a.account),
+    className: "text-red-500 hover:underline"
+  }, "刪除")))), db.accountRoles.length === 0 && /*#__PURE__*/React.createElement("tr", null, /*#__PURE__*/React.createElement("td", {
+    colSpan: "4",
+    className: "py-6 text-center text-slate-400"
+  }, "查無帳號權限設定，請匯入或新增")))))));
 }
 
 /* ============================================================
@@ -5020,7 +5195,7 @@ function App() {
   const [ready, setReady] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [month, setMonth] = useState(CURRENT_MONTH);
-  const [role, setRole] = useState("manager"); // manager=管理者, staff=盤點人員
+  const [role, setRole] = useState("manager"); // manager=管理者, analyst=業務主管, staff=盤點人員
   const [tab, setTab] = useState("download");
   const [toastMsg, setToastMsg] = useState("");
   const [showBell, setShowBell] = useState(false);
@@ -5032,29 +5207,38 @@ function App() {
     syncingRef.current = v;
     setSyncing(v);
   };
-  const user = sessionStorage.getItem("loginUser") || "demo-user";
 
-  // 權限控管：盤點人員僅可使用下載區與填寫區
+  // 原型展示模式（app.html 略過登入直接進站）沒有 loginUser，角色維持手動切換；
+  // 真實登入（index.html 走 AD 驗證成功）則依帳號在「帳號權限」名單中的設定自動判斷角色，不給手動切換
+  const loginUser = sessionStorage.getItem("loginUser");
+  const isDemoMode = !loginUser;
+  const user = loginUser || "demo-user";
+  useEffect(() => {
+    if (isDemoMode || !db) return; // 展示模式維持手動下拉選單
+    setRole(resolveRoleForAccount(user, db.accountRoles));
+  }, [isDemoMode, user, db && db.accountRoles]);
+
+  // 權限控管：盤點人員僅可使用下載區與填寫區，業務主管除維護區外都能用，管理者全部功能
   const NAV_TABS = [{
     id: "layout",
     label: "🗺️ Layout 圖",
-    roles: ["manager", "staff"]
+    roles: ["manager", "analyst", "staff"]
   }, {
     id: "download",
     label: "📥 主檔下載",
-    roles: ["manager", "staff"]
+    roles: ["manager", "analyst", "staff"]
   }, {
     id: "count",
     label: "📋 盤點總表上傳",
-    roles: ["manager", "staff"]
+    roles: ["manager", "analyst", "staff"]
   }, {
     id: "fill",
     label: "📝 盤點作業情況紀錄",
-    roles: ["manager", "staff"]
+    roles: ["manager", "analyst", "staff"]
   }, {
     id: "analysis",
     label: "📊 數據分析",
-    roles: ["manager"]
+    roles: ["manager", "analyst"]
   }, {
     id: "maintain",
     label: "🛠 維護區",
@@ -5064,14 +5248,14 @@ function App() {
   // 初次載入：先顯示上次的雲端資料快照（若有），畫面立刻可用；背景同時抓最新資料，抓到再悄悄換上
   // （stale-while-revalidate，避免每次進站都要等 Apps Script／Sheets 讀完才看得到畫面）
   useEffect(() => {
-    const cached = InventoryAPI.loadCachedDB();
+    const cached = normalizeDB(InventoryAPI.loadCachedDB());
     if (cached && cached.brands && cached.brands.length) {
       fromPollRef.current = true; // 快取資料不算使用者編輯，不要回寫後端
       setDB(cached);
       setReady(true);
     }
     (async () => {
-      let d = await InventoryAPI.loadDB();
+      let d = normalizeDB(await InventoryAPI.loadDB());
       if (!d || !d.brands || d.brands.length === 0) {
         d = seed();
         await InventoryAPI.saveTabs(d, ALL_TABS);
@@ -5109,7 +5293,7 @@ function App() {
       if (document.hidden || syncingRef.current) return;
       if (Date.now() - lastEditRef.current < 3000) return;
       try {
-        const d = await InventoryAPI.loadDB();
+        const d = normalizeDB(await InventoryAPI.loadDB());
         if (d && d.brands) {
           InventoryAPI.cacheDB(d);
           fromPollRef.current = true;
@@ -5124,7 +5308,7 @@ function App() {
   const refresh = async () => {
     setSync(true);
     try {
-      const d = await InventoryAPI.loadDB();
+      const d = normalizeDB(await InventoryAPI.loadDB());
       if (d && d.brands) {
         InventoryAPI.cacheDB(d);
         fromPollRef.current = true;
@@ -5202,15 +5386,19 @@ function App() {
   }, pendingStores.map(s => /*#__PURE__*/React.createElement("li", {
     key: s.id,
     className: "text-slate-600"
-  }, "• ", s.code, " ", s.name))))), /*#__PURE__*/React.createElement("select", {
+  }, "• ", s.code, " ", s.name))))), isDemoMode ? /*#__PURE__*/React.createElement("select", {
     value: role,
     onChange: e => setRole(e.target.value),
     className: "px-2 py-1.5 rounded-lg text-sm text-slate-800 bg-white"
   }, /*#__PURE__*/React.createElement("option", {
     value: "manager"
-  }, "👑 管理者"), /*#__PURE__*/React.createElement("option", {
+  }, ROLE_LABELS.manager), /*#__PURE__*/React.createElement("option", {
+    value: "analyst"
+  }, ROLE_LABELS.analyst), /*#__PURE__*/React.createElement("option", {
     value: "staff"
-  }, "🧑‍🔧 盤點人員")), /*#__PURE__*/React.createElement("div", {
+  }, ROLE_LABELS.staff)) : /*#__PURE__*/React.createElement("span", {
+    className: "px-2 py-1.5 rounded-lg text-sm bg-slate-800"
+  }, ROLE_LABELS[role] || ROLE_LABELS.staff), /*#__PURE__*/React.createElement("div", {
     className: "text-sm text-slate-300"
   }, user), /*#__PURE__*/React.createElement("button", {
     onClick: logout,
